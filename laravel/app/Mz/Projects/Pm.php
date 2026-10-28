@@ -14,13 +14,13 @@ use Illuminate\Support\Facades\DB;
 final class Pm
 {
     public const PROJECT_STATUSES = ['planning', 'not_started', 'in_progress', 'on_hold', 'completed', 'cancelled'];
-    public const TASK_STATUSES = ['not_started', 'pending', 'in_progress', 'blocked', 'completed', 'cancelled'];
+    public const TASK_STATUSES = ['not_started', 'pending', 'in_progress', 'awaiting_review', 'blocked', 'completed', 'cancelled'];
     public const PRIORITIES = ['low', 'medium', 'high', 'urgent'];
     public const PENDING_REASONS = ['approval', 'materials', 'finance', 'another_task', 'another_department', 'paused', 'other'];
     public const ISSUE_STATUSES = ['open', 'under_review', 'assigned', 'in_progress', 'resolved', 'closed'];
     public const SOURCES = ['app', 'web', 'chat_bot', 'offline_sync', 'system'];
     /** Tasks that still count as open work. */
-    public const OPEN_TASK = ['not_started', 'pending', 'in_progress', 'blocked'];
+    public const OPEN_TASK = ['not_started', 'pending', 'in_progress', 'awaiting_review', 'blocked'];
 
     /**
      * Every Project Management change is an audit_logs row with entity ('project', project id).

@@ -6,6 +6,7 @@ use App\Mz\Notifications\Fcm;
 use App\Mz\Notifications\Telegram;
 use App\Mz\Services\Account;
 use App\Mz\Services\Activity;
+use App\Mz\Services\ContributionReceipts;
 use App\Mz\Services\Departments;
 use App\Mz\Services\MemberProfile;
 use App\Mz\Services\Members;
@@ -126,6 +127,32 @@ Route::prefix('me')->middleware('mz')->group(function () {
         return Http::ok($card + ['qr' => Members::qrPayload($card['uuid'])]);
     });
     Route::get('payments', fn () => Http::ok(Payments::forMember(Ctx::auth()->id)));
+
+    // Contribution receipts
+    Route::get('contribution-receipts/calculate', function () {
+        $q = Ctx::query(Z::object([
+            'period' => Z::string()->regex('/^\d{4}-\d{2}$/'),
+            'months' => Z::coerceNumber()->min(1)->max(12),
+        ]));
+        return Http::ok(ContributionReceipts::calculateExpected(Ctx::auth()->id, $q['period'], (int) $q['months']));
+    });
+    Route::get('contribution-receipts', fn () => Http::ok(ContributionReceipts::forMember(Ctx::auth()->id)));
+    Route::post('contribution-receipts', function () {
+        $field = request()->hasFile('receipt') ? 'receipt' : 'file';
+        $file = Upload::single('contribution_receipt', $field);
+        $b = Ctx::body(Z::object([
+            'period' => Z::string()->regex('/^\d{4}-\d{2}$/'),
+            'months' => Z::coerceNumber()->min(1)->max(12),
+            'method' => Z::enum(['cash', 'bank', 'telebirr', 'other'])->optional(),
+            'reference' => V::optionalText(120),
+            'paid_on' => V::dateOnly()->optional(),
+            'member_note' => V::optionalText(1000),
+            'submitted_amount' => Z::coerceNumber()->min(0)->optional(),
+        ]));
+        return Http::created(ContributionReceipts::submit(Ctx::actx(), $b, $file));
+    });
+    Route::get('contribution-receipts/{id}/file', fn () => ContributionReceipts::fileResponse(Ctx::auth(), Ctx::id()));
+
     Route::get('payments/receipts', fn () => Http::ok(Payments::myReceipts(Ctx::auth()->id)));
     Route::post('payments/receipt', function () {
         $file = Upload::single('receipt', request()->hasFile('receipt') ? 'receipt' : 'file');

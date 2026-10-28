@@ -3,6 +3,7 @@
 use App\Mz\Auth\Catalog;
 use App\Mz\Http\Ctx;
 use App\Mz\Http\Upload;
+use App\Mz\Services\ContributionReceipts;
 use App\Mz\Services\DepartmentAdmins;
 use App\Mz\Services\Departments;
 use App\Mz\Services\Members;
@@ -167,6 +168,40 @@ Route::prefix('payments')->middleware('mz')->group(function () use ($period) {
         return Http::ok(Payments::rejectReceipt(Ctx::actx(), $id, $b['reason']));
     })->middleware($manage);
     Route::get('receipts/{id}/file', fn () => Payments::downloadReceiptFile(Ctx::auth(), Ctx::id()))->middleware($view);
+});
+
+
+Route::prefix('org/contribution-receipts')->middleware('mz')->group(function () use ($period) {
+    $review = ['mz:any,payments.manage,contributions.review'];
+    $view = ['mz:any,payments.view,payments.manage,contributions.review'];
+
+    Route::get('/', function () use ($period, $view) {
+        $q = Ctx::query(Z::object([
+            'period' => $period()->optional(),
+            'status' => Z::enum(['submitted', 'under_review', 'approved', 'rejected', 'correction_needed'])->optional(),
+            'user_id' => Z::coerceNumber()->optional(),
+            'q' => Z::string()->trim()->max(100)->optional(),
+            'page' => Z::coerceNumber()->optional(),
+            'limit' => Z::coerceNumber()->optional(),
+        ]));
+        $page = Page::params(['page' => $q['page'] ?? null, 'limit' => $q['limit'] ?? null]);
+        unset($q['page'], $q['limit']);
+        return Http::page(ContributionReceipts::adminList($q, $page));
+    })->middleware($view);
+
+    Route::get('{id}', fn () => Http::ok(ContributionReceipts::get(Ctx::id())))->middleware($view);
+
+    Route::post('{id}/review', function () {
+        $id = Ctx::id();
+        $b = Ctx::body(Z::object([
+            'status' => Z::enum(['approved', 'rejected', 'under_review', 'correction_needed']),
+            'review_note' => V::optionalText(1000),
+            'approved_amount' => Z::coerceNumber()->min(0)->optional(),
+        ])->strict());
+        return Http::ok(ContributionReceipts::review(Ctx::actx(), $id, $b));
+    })->middleware($review);
+
+    Route::get('{id}/file', fn () => ContributionReceipts::fileResponse(Ctx::auth(), Ctx::id()))->middleware($view);
 });
 
 Route::get('members/{uuid}', function () {

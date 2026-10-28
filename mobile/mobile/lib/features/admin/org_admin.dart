@@ -17,6 +17,7 @@ import '../auth/session.dart';
 import '../hub/hub_screen.dart' show paymentMethodLabel;
 import '../members/department_participation.dart' show ethPeriod, periodLabel, shiftPeriod;
 import 'admin_widgets.dart';
+import 'receipt_review_screen.dart';
 import 'stage_admin.dart' show DepartmentAdminsScreen;
 
 // =============================================================================
@@ -416,6 +417,13 @@ class _PaymentsAdminScreenState extends ConsumerState<PaymentsAdminScreen> with 
     return AdminScaffold(
       title: l.monthlyPayments,
       actions: [
+        IconButton(
+          tooltip: l.isEn ? 'Review Receipts' : 'ደረሰኞችን ገምግም',
+          icon: const Icon(Icons.mark_email_unread_outlined),
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => const ReceiptReviewAdminScreen()),
+          ),
+        ),
         ReportExportButton(kind: 'contributions', filters: () => {'period': _period}),
         if (ref.watch(currentUserProvider)?.can(Perm.paymentsConfigure) ?? false) ...[
           IconButton(tooltip: l.paymentRates, icon: const Icon(Icons.price_change_outlined), onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const PaymentRatesScreen()))),

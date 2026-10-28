@@ -410,6 +410,44 @@ class OrgRepository {
   Future<void> deletePayment(int id) => _api.delete<void>('/payments/$id');
   Future<Json> uploadReceipt(int id, String path) => _api.upload('/payments/$id/receipt', filePath: path, parse: asJson);
   Future<Json> memberPayments(int userId) => _api.get('/payments/member/$userId', parse: asJson);
+
+  // ---- Monthly Contribution Receipts ----
+  Future<Json> calculateContributionReceipt({required String period, required int months}) =>
+      _api.get('/me/contribution-receipts/calculate', query: {'period': period, 'months': '$months'}, parse: asJson);
+
+  Future<Json> submitContributionReceipt({
+    required String filePath,
+    required String period,
+    required int months,
+    required double submittedAmount,
+    required String method,
+    required String paidOn,
+    String? reference,
+    String? note,
+  }) =>
+      _api.upload(
+        '/me/contribution-receipts',
+        filePath: filePath,
+        fields: {
+          'period': period,
+          'months': '$months',
+          'submitted_amount': '$submittedAmount',
+          'method': method,
+          'paid_on': paidOn,
+          if (reference != null && reference.isNotEmpty) 'reference': reference,
+          if (note != null && note.isNotEmpty) 'member_note': note,
+        },
+        parse: asJson,
+      );
+
+  Future<List<Json>> myContributionReceipts() => _api.get('/me/contribution-receipts', parse: asJsonList);
+
+  Future<Paged<Json>> adminContributionReceipts({String? status, String? period, String? q, int page = 1}) =>
+      _api.getPage('/org/contribution-receipts', (j) => j, page: page, query: {'status': status, 'period': period, 'q': q});
+
+  Future<Json> reviewContributionReceipt(int id, {required String status, String? note}) =>
+      _api.post('/org/contribution-receipts/$id/review', body: {'status': status, if (note != null) 'review_note': note}, parse: asJson);
+
 }
 
 /// Choir (መዘምራን): my result in the current holiday selection (selections themselves: StageRepository).

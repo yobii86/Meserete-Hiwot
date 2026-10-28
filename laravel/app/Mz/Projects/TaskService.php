@@ -53,6 +53,11 @@ final class TaskService
             'completed_at' => $t->completed_at,
             'completed_by' => $t->completed_by ? ($users[(int) $t->completed_by] ?? null) : null,
             'completion_note' => $t->completion_note,
+            'deliverable_achieved' => isset($t->deliverable_achieved) ? (bool) $t->deliverable_achieved : null,
+            'completion_evidence' => $t->completion_evidence ?? null,
+            'review_feedback' => $t->review_feedback ?? null,
+            'reviewed_by' => isset($t->reviewed_by) && $t->reviewed_by ? ($users[(int) $t->reviewed_by] ?? null) : null,
+            'reviewed_at' => $t->reviewed_at ?? null,
             'version' => (int) $t->version,
             'created_by' => $t->created_by ? ($users[(int) $t->created_by] ?? null) : null,
             'created_at' => $t->created_at,
@@ -324,6 +329,88 @@ final class TaskService
             'task' => $t->title, 'status' => T::t("task.status.$status"), 'actor' => $auth->fullName,
             'reason' => $reason ? T::t('project.reason.suffix', ['reason' => $reason]) : '',
         ], 'project_task', (int) $t->id, "status:{$t->id}:$stamp");
+    }
+
+    public static function submitCompletion(array $actx, int $id, array $input): array
+    {
+        [$t, $access] = Access::loadTask($actx['auth'], $id);
+        if (! $access['update_status']) throw ApiError::forbidden('PROJECT_FORBIDDEN', 'Cannot update this task');
+
+        $deliverableAchieved = ! empty($input['deliverable_achieved']);
+        $notes = $input['completion_note'] ?? null;
+        $evidence = $input['completion_evidence'] ?? null;
+
+        DB::transaction(function () use ($actx, $id, $t, $deliverableAchieved, $notes, $evidence) {
+            DB::table('project_tasks')->where('id', $id)->update([
+                'status' => 'awaiting_review',
+                'progress' => 100,
+                'deliverable_achieved' => $deliverableAchieved ? 1 : 0,
+                'completion_note' => $notes,
+                'completion_evidence' => $evidence,
+                'completed_by' => $actx['auth']->id,
+                'version' => DB::raw('version + 1'),
+            ]);
+            Pm::log($actx, 'project.task.submit_completion', (int) $t->project_id, [
+                'task_id' => $id,
+                'deliverable_achieved' => $deliverableAchieved,
+                'completion_note' => $notes,
+            ]);
+        });
+
+        $p = DB::table('projects')->where('id', $t->project_id)->first(['id', 'title', 'leader_id', 'department_id']);
+        $recipients = array_merge(
+            $p->leader_id ? [(int) $p->leader_id] : [],
+            Access::managersOf((int) $p->department_id)
+        );
+        $stamp = Pm::stamp();
+        Pm::notify($recipients, $actx['auth']->id, 'task.awaiting_review.title', 'task.awaiting_review.body', [
+            'task' => $t->title, 'project' => $p->title, 'actor' => $actx['auth']->fullName,
+        ], 'project_task', $id, "review:$id:$stamp");
+
+        [$fresh, $a2] = Access::loadTask($actx['auth'], $id);
+        return ['task' => self::serialize($fresh, $actx['auth'], $a2)];
+    }
+
+    public static function reviewCompletion(array $actx, int $id, array $input): array
+    {
+        [$t] = Access::loadTask($actx['auth'], $id, 'edit');
+        $approved = ($input['decision'] ?? '') === 'approved';
+        $feedback = $input['feedback'] ?? null;
+        $newStatus = $approved ? 'completed' : ($input['status'] ?? 'in_progress');
+
+        DB::transaction(function () use ($actx, $id, $t, $approved, $newStatus, $feedback) {
+            $patch = [
+                'status' => $newStatus,
+                'reviewed_by' => $actx['auth']->id,
+                'reviewed_at' => Dates::now(),
+                'review_feedback' => $feedback,
+                'version' => DB::raw('version + 1'),
+            ];
+            if ($approved) {
+                $patch['completed_at'] = Dates::now();
+                $patch['completed_by'] = $t->completed_by ?: $actx['auth']->id;
+                $patch['progress'] = 100;
+            } else {
+                $patch['progress'] = min(90, (int) $t->progress);
+            }
+            DB::table('project_tasks')->where('id', $id)->update($patch);
+            Pm::log($actx, $approved ? 'project.task.approve_completion' : 'project.task.reject_completion', (int) $t->project_id, [
+                'task_id' => $id,
+                'decision' => $approved ? 'approved' : 'rejected',
+                'feedback' => $feedback,
+            ]);
+            ProjectService::recalculate((int) $t->project_id);
+        });
+
+        $assignees = Access::assigneeIds($id);
+        $p = DB::table('projects')->where('id', $t->project_id)->first(['id', 'title']);
+        $stamp = Pm::stamp();
+        Pm::notify($assignees, $actx['auth']->id, $approved ? 'task.approved.title' : 'task.returned.title', $approved ? 'task.approved.body' : 'task.returned.body', [
+            'task' => $t->title, 'project' => $p->title, 'feedback' => $feedback ?: '',
+        ], 'project_task', $id, "rev_done:$id:$stamp");
+
+        [$fresh, $a2] = Access::loadTask($actx['auth'], $id);
+        return ['task' => self::serialize($fresh, $actx['auth'], $a2)];
     }
 
     public static function delete(array $actx, int $id): void

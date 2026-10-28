@@ -38,6 +38,7 @@ final class Storage
         'BOOKS' => 'books',
         'COMPLAINTS' => 'complaints',
         'RECEIPTS' => 'receipts',
+        'CONTRIBUTION_RECEIPTS' => 'receipts/contributions',
         'DIAGNOSTICS' => 'diagnostics',
     ];
 
@@ -61,6 +62,7 @@ final class Storage
             'lesson' => ['exts' => ['pdf', 'jpg', 'png', 'webp', 'gif', 'docx', 'pptx', 'xlsx'], 'audio' => true, 'max' => $c['max_audio_bytes'], 'visibility' => 'private'],
             'apk' => ['exts' => ['apk'], 'max' => $c['max_apk_bytes'], 'visibility' => 'private'],
             'receipt' => ['exts' => ['jpg', 'png', 'webp', 'pdf'], 'max' => $c['max_document_bytes'] ?? 10 * 1024 * 1024, 'visibility' => 'private'],
+            'contribution_receipt' => ['exts' => ['jpg', 'png', 'webp', 'pdf'], 'max' => $c['max_image_bytes'] ?? 10 * 1024 * 1024, 'visibility' => 'private'],
             'diagnostic' => ['exts' => ['jpg', 'png', 'webp'], 'max' => $c['max_image_bytes'] ?? 5 * 1024 * 1024, 'visibility' => 'private'],
         ];
     }

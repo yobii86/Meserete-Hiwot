@@ -18,6 +18,7 @@ import '../../widgets/brand.dart';
 import '../../widgets/dialogs.dart';
 import '../../widgets/qr.dart';
 import '../../widgets/states.dart';
+import '../contributions/submit_receipt_dialog.dart';
 import '../../app/chrome.dart';
 import '../auth/session.dart';
 import '../home/home_screen.dart' show BannerCarousel;
@@ -244,12 +245,15 @@ class MyPaymentsScreen extends ConsumerWidget {
         actions: const [ContextualHelpButton(screenRoute: '/settings/payments')],
       ),
       floatingActionButton: FloatingActionButton.extended(
-        key: const ValueKey('submit-payment-receipt-btn'),
-        onPressed: () => _submitReceiptDialog(context, ref, defaultRate, currency),
-        icon: const Icon(Icons.upload_file_rounded),
-        label: Text(l.isEn ? 'Submit Receipt' : 'ደረሰኝ አስገባ'),
         backgroundColor: AppColors.maroon,
-        foregroundColor: Colors.white,
+        icon: const Icon(Icons.receipt_long_rounded, color: Colors.white),
+        label: Text(l.isEn ? 'Submit Receipt' : 'ደረሰኝ አስገባ', style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w700)),
+        onPressed: () async {
+          final ok = await showSubmitContributionReceiptDialog(context);
+          if (ok == true) {
+            ref.invalidate(myPaymentsProvider);
+          }
+        },
       ),
       body: AsyncView(
         value: myPayAsync,

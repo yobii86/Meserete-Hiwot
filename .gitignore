@@ -23,3 +23,6 @@ mobile/mobile/android/captures/
 # Python scratch caches
 __pycache__/
 *.py[cod]
+
+.phpunit.result.cache
+*.cache
