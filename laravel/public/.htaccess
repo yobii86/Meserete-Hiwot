@@ -23,3 +23,27 @@
     RewriteCond %{REQUEST_FILENAME} !-f
     RewriteRule ^ index.php [L]
 </IfModule>
+
+<IfModule mod_headers.c>
+    # 1. HTML, version.json, service worker, and flutter bootstrap must never be cached
+    <FilesMatch "\.(html|htm)$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires 0
+    </FilesMatch>
+    <FilesMatch "(version\.json|flutter_service_worker\.js|flutter_bootstrap\.js)$">
+        Header set Cache-Control "no-cache, no-store, must-revalidate"
+        Header set Pragma "no-cache"
+        Header set Expires 0
+    </FilesMatch>
+
+    # 2. Main JavaScript bundle: must-revalidate with ETag/Last-Modified check
+    <FilesMatch "\.js$">
+        Header set Cache-Control "no-cache, must-revalidate"
+    </FilesMatch>
+
+    # 3. Static binary assets (fonts, images, wasm, icons): cache for 7 days
+    <FilesMatch "\.(png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|wasm)$">
+        Header set Cache-Control "public, max-age=604800, immutable"
+    </FilesMatch>
+</IfModule>

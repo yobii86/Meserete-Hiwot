@@ -186,6 +186,19 @@ class _CheckoutTabState extends ConsumerState<_CheckoutTab> {
     }
   }
 
+  Future<void> _openBookPicker() async {
+    final copyCode = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _PhysicalBookPickerDialog(),
+    );
+    if (copyCode != null && mounted) {
+      _codeCtrl.text = copyCode;
+      await _lookupCopy(copyCode);
+    }
+  }
+
   Future<void> _selectBorrower() async {
     final sel = await pickUsers(context, multiple: false);
     if (sel != null && sel.ids.isNotEmpty && mounted) {
@@ -301,6 +314,13 @@ class _CheckoutTabState extends ConsumerState<_CheckoutTab> {
                 child: Text(l.search),
               ),
             ]),
+            const SizedBox(height: 10),
+            OutlinedButton.icon(
+              key: const ValueKey('checkout-pick-book-btn'),
+              icon: const Icon(Icons.search_rounded, size: 18),
+              label: Text(l.isEn ? 'Browse & Select Available Book' : 'የሚገኙ መጻሕፍትን ፈልገው ይምረጡ'),
+              onPressed: _openBookPicker,
+            ),
             if (_lookingUpCopy) ...[
               const SizedBox(height: 12),
               const LinearProgressIndicator(),
@@ -465,6 +485,7 @@ class _LoansTab extends ConsumerStatefulWidget {
 class _LoansTabState extends ConsumerState<_LoansTab> {
   final _ctrl = PagedListController<LibraryLoan>();
   String _q = '';
+  bool _groupByBook = false;
 
   Future<void> _returnLoan(LibraryLoan loan) async {
     final l = context.l10n;
@@ -529,12 +550,35 @@ class _LoansTabState extends ConsumerState<_LoansTab> {
     final f = Formatters(l, Localizations.localeOf(context).languageCode);
 
     return Column(children: [
-      Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 4), child: SearchBox(onChanged: (v) => setState(() => _q = v))),
-      Expanded(
-        child: PagedListView<LibraryLoan>(
-          key: ValueKey(_q),
-          controller: _ctrl,
-          fetch: (page) => ref.read(libraryRepositoryProvider).loans(status: 'active', q: _q.isEmpty ? null : _q, page: page),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+        child: Row(
+          children: [
+            Expanded(child: SearchBox(onChanged: (v) => setState(() => _q = v))),
+            const SizedBox(width: 8),
+            FilterChip(
+              avatar: Icon(_groupByBook ? Icons.view_agenda_rounded : Icons.view_headline_rounded, size: 16),
+              label: Text(l.isEn ? 'Group' : 'በመጽሐፍ'),
+              selected: _groupByBook,
+              onSelected: (val) => setState(() => _groupByBook = val),
+            ),
+          ],
+        ),
+      ),
+      if (_groupByBook)
+        Expanded(
+          child: _GroupedLoansView(
+            key: ValueKey('grouped-$_q'),
+            q: _q,
+            onReturn: _returnLoan,
+          ),
+        )
+      else
+        Expanded(
+          child: PagedListView<LibraryLoan>(
+            key: ValueKey(_q),
+            controller: _ctrl,
+            fetch: (page) => ref.read(libraryRepositoryProvider).loans(status: 'active', q: _q.isEmpty ? null : _q, page: page),
           emptyMessage: l.noResults,
           emptyIcon: Icons.menu_book_outlined,
           itemBuilder: (context, loan, _) => Padding(
@@ -595,6 +639,7 @@ class _CopiesTabState extends ConsumerState<_CopiesTab> {
   final _ctrl = PagedListController<LibraryCopy>();
   String _q = '';
   String? _status;
+  bool _groupByBook = false;
 
   @override
   Widget build(BuildContext context) {
@@ -607,6 +652,13 @@ class _CopiesTabState extends ConsumerState<_CopiesTab> {
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
         child: Row(children: [
+          FilterChip(
+            avatar: Icon(_groupByBook ? Icons.view_agenda_rounded : Icons.view_headline_rounded, size: 16),
+            label: Text(l.isEn ? 'Group' : 'በመጽሐፍ'),
+            selected: _groupByBook,
+            onSelected: (val) => setState(() => _groupByBook = val),
+          ),
+          const SizedBox(width: 8),
           FilterChip(label: Text(l.all), selected: _status == null, onSelected: (_) => setState(() => _status = null)),
           const SizedBox(width: 6),
           FilterChip(label: Text(l.libStatusAvailable), selected: _status == 'available', onSelected: (_) => setState(() => _status = 'available')),
@@ -618,11 +670,20 @@ class _CopiesTabState extends ConsumerState<_CopiesTab> {
           FilterChip(label: Text(l.libStatusWithdrawn), selected: _status == 'withdrawn', onSelected: (_) => setState(() => _status = 'withdrawn')),
         ]),
       ),
-      Expanded(
-        child: PagedListView<LibraryCopy>(
-          key: ValueKey('$_q-$_status'),
-          controller: _ctrl,
-          fetch: (page) => ref.read(libraryRepositoryProvider).copies(q: _q.isEmpty ? null : _q, status: _status, page: page),
+      if (_groupByBook)
+        Expanded(
+          child: _GroupedCopiesView(
+            key: ValueKey('grouped-$_q-$_status'),
+            q: _q,
+            status: _status,
+          ),
+        )
+      else
+        Expanded(
+          child: PagedListView<LibraryCopy>(
+            key: ValueKey('$_q-$_status'),
+            controller: _ctrl,
+            fetch: (page) => ref.read(libraryRepositoryProvider).copies(q: _q.isEmpty ? null : _q, status: _status, page: page),
           emptyMessage: l.noResults,
           emptyIcon: Icons.inventory_2_outlined,
           itemBuilder: (context, c, _) => Padding(
@@ -710,3 +771,635 @@ class _OverdueTabState extends ConsumerState<_OverdueTab> {
     );
   }
 }
+
+// =============================================================================
+// Grouped Loans View
+// =============================================================================
+class _GroupedLoansView extends ConsumerStatefulWidget {
+  const _GroupedLoansView({super.key, required this.q, required this.onReturn});
+  final String q;
+  final Future<void> Function(LibraryLoan) onReturn;
+
+  @override
+  ConsumerState<_GroupedLoansView> createState() => _GroupedLoansViewState();
+}
+
+class _GroupedLoansViewState extends ConsumerState<_GroupedLoansView> {
+  bool _loading = true;
+  List<LibraryLoan> _loans = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final res = await ref.read(libraryRepositoryProvider).loans(status: 'active', q: widget.q.isEmpty ? null : widget.q);
+      if (mounted) {
+        setState(() {
+          _loans = res.items;
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = context.l10n;
+    final p = context.palette;
+    final f = Formatters(l, Localizations.localeOf(context).languageCode);
+
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_loans.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.menu_book_outlined, size: 48, color: p.muted.withValues(alpha: 0.5)),
+            const SizedBox(height: 8),
+            Text(l.noResults, style: TextStyle(color: p.muted)),
+          ],
+        ),
+      );
+    }
+
+    final Map<int, List<LibraryLoan>> groups = {};
+    for (final loan in _loans) {
+      groups.putIfAbsent(loan.bookId, () => []).add(loan);
+    }
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        itemCount: groups.keys.length,
+        itemBuilder: (ctx, i) {
+          final bookId = groups.keys.elementAt(i);
+          final bookLoans = groups[bookId]!;
+          final first = bookLoans.first;
+          final title = first.bookTitle ?? 'Book #$bookId';
+          final author = first.bookAuthor;
+
+          return AppCard(
+            padding: const EdgeInsets.all(12),
+            child: ExpansionTile(
+              initiallyExpanded: true,
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(top: 8),
+              leading: const Icon(Icons.menu_book_rounded, color: AppColors.gold, size: 28),
+              title: Text(title, style: context.serif(15, weight: FontWeight.w700)),
+              subtitle: Row(
+                children: [
+                  if (author != null) ...[
+                    Flexible(child: Text(author, style: context.sans(12, color: p.muted), overflow: TextOverflow.ellipsis)),
+                    const SizedBox(width: 8),
+                  ],
+                  Pill(
+                    '${bookLoans.length} ${l.isEn ? 'active' : 'ተወስደዋል'}',
+                    color: const Color(0xFF1F5F8B),
+                  ),
+                ],
+              ),
+              children: bookLoans.map((loan) {
+                return Container(
+                          padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: p.fill,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Row(
+                              children: [
+                                Pill(loan.copyCode, color: AppColors.goldDark),
+                                const SizedBox(width: 6),
+                                if (loan.isOverdue)
+                                  Pill(l.libOverdue, color: AppColors.danger)
+                                else
+                                  Pill(l.libStatusOnLoan, color: const Color(0xFF1F5F8B)),
+                              ],
+                            ),
+                            const SizedBox(height: 6),
+                            Text(
+                              '${loan.borrowerName ?? 'Member #${loan.userId}'}${loan.borrowerPhone != null ? ' · ${loan.borrowerPhone}' : ''}',
+                              style: context.sans(13, weight: FontWeight.w600),
+                            ),
+                            Text(
+                              '${l.libDueOn}: ${loan.dueOn != null ? f.date(loan.dueOn!) : '—'}',
+                              style: context.sans(11.5, color: loan.isOverdue ? AppColors.danger : p.subtle),
+                            ),
+                          ],
+                        ),
+                      ),
+                      FilledButton.tonal(
+                        key: ValueKey('grouped-return-btn-${loan.id}'),
+                        onPressed: () async {
+                          await widget.onReturn(loan);
+                          _load();
+                        },
+                        child: Text(l.libReturn),
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Grouped Copies View
+// =============================================================================
+class _GroupedCopiesView extends ConsumerStatefulWidget {
+  const _GroupedCopiesView({super.key, required this.q, this.status});
+  final String q;
+  final String? status;
+
+  @override
+  ConsumerState<_GroupedCopiesView> createState() => _GroupedCopiesViewState();
+}
+
+class _GroupedCopiesViewState extends ConsumerState<_GroupedCopiesView> {
+  bool _loading = true;
+  List<LibraryCopy> _copies = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final res = await ref.read(libraryRepositoryProvider).copies(q: widget.q.isEmpty ? null : widget.q, status: widget.status);
+      if (mounted) {
+        setState(() {
+          _copies = res.items;
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = context.l10n;
+    final p = context.palette;
+
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_copies.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.inventory_2_outlined, size: 48, color: p.muted.withValues(alpha: 0.5)),
+            const SizedBox(height: 8),
+            Text(l.noResults, style: TextStyle(color: p.muted)),
+          ],
+        ),
+      );
+    }
+
+    final Map<int, List<LibraryCopy>> groups = {};
+    for (final copy in _copies) {
+      groups.putIfAbsent(copy.itemId, () => []).add(copy);
+    }
+
+    return RefreshIndicator(
+      onRefresh: _load,
+      child: ListView.builder(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+        itemCount: groups.keys.length,
+        itemBuilder: (ctx, i) {
+          final itemId = groups.keys.elementAt(i);
+          final bookCopies = groups[itemId]!;
+          final first = bookCopies.first;
+          final title = first.bookTitle ?? 'Book #$itemId';
+          final author = first.bookAuthor;
+          final availableCount = bookCopies.where((c) => c.isAvailable).length;
+
+          return AppCard(
+            padding: const EdgeInsets.all(12),
+            child: ExpansionTile(
+              initiallyExpanded: true,
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(top: 8),
+              leading: const Icon(Icons.bookmark_border_rounded, color: AppColors.gold, size: 28),
+              title: Text(title, style: context.serif(15, weight: FontWeight.w700)),
+              subtitle: Row(
+                children: [
+                  if (author != null) ...[
+                    Flexible(child: Text(author, style: context.sans(12, color: p.muted), overflow: TextOverflow.ellipsis)),
+                    const SizedBox(width: 8),
+                  ],
+                  Pill(
+                    '$availableCount/${bookCopies.length} ${l.isEn ? 'Available' : 'ይገኛሉ'}',
+                    color: availableCount > 0 ? AppColors.success : Colors.grey,
+                  ),
+                ],
+              ),
+              children: bookCopies.map((c) {
+                return Container(
+                          padding: const EdgeInsets.all(10),
+                  decoration: BoxDecoration(
+                    color: p.fill,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Wrap(spacing: 6, runSpacing: 4, children: [
+                              Pill(c.copyCode, color: AppColors.goldDark),
+                              Pill(copyConditionLabel(l, c.condition), color: copyConditionColor(c.condition)),
+                              Pill(copyStatusLabel(l, c.status), color: copyStatusColor(c.status)),
+                              if (c.location != null) Pill(c.location!, color: p.muted),
+                            ]),
+                            if (c.isOnLoan && c.currentLoan != null) ...[
+                              const SizedBox(height: 6),
+                              Text(
+                                '${l.libStatusOnLoan}: ${c.currentLoan!.borrowerName ?? ''}',
+                                style: context.sans(12, color: const Color(0xFF1F5F8B), weight: FontWeight.w500),
+                              ),
+                            ],
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+          );
+        },
+      ),
+    );
+  }
+}
+
+// =============================================================================
+// Searchable Available Physical Books Picker Dialog
+// =============================================================================
+class _PhysicalBookPickerDialog extends ConsumerStatefulWidget {
+  const _PhysicalBookPickerDialog();
+
+  @override
+  ConsumerState<_PhysicalBookPickerDialog> createState() => _PhysicalBookPickerDialogState();
+}
+
+class _PhysicalBookPickerDialogState extends ConsumerState<_PhysicalBookPickerDialog> {
+  final _searchCtrl = TextEditingController();
+  int? _selectedCatId;
+  bool _loading = false;
+  List<Book> _books = [];
+  List<LibraryCategory> _categories = [];
+  Book? _selectedBook;
+  List<LibraryCopy> _bookCopies = [];
+  bool _loadingCopies = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadInitial();
+  }
+
+  @override
+  void dispose() {
+    _searchCtrl.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadInitial() async {
+    setState(() => _loading = true);
+    try {
+      final repo = ref.read(libraryRepositoryProvider);
+      final cats = await repo.categories(type: 'physical');
+      final page = await repo.books(kind: 'physical');
+      if (mounted) {
+        setState(() {
+          _categories = cats;
+          _books = page.items;
+          _loading = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _search() async {
+    setState(() => _loading = true);
+    try {
+      final repo = ref.read(libraryRepositoryProvider);
+      final page = await repo.books(
+        kind: 'physical',
+        categoryId: _selectedCatId,
+        q: _searchCtrl.text.trim().isEmpty ? null : _searchCtrl.text.trim(),
+      );
+      if (mounted) {
+        setState(() {
+          _books = page.items;
+          _loading = false;
+          _selectedBook = null;
+          _bookCopies = [];
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _selectBook(Book b) async {
+    setState(() {
+      _selectedBook = b;
+      _loadingCopies = true;
+      _bookCopies = [];
+    });
+    try {
+      final repo = ref.read(libraryRepositoryProvider);
+      final page = await repo.copies(itemId: b.id, status: 'available');
+      if (mounted) {
+        setState(() {
+          _bookCopies = page.items;
+          _loadingCopies = false;
+        });
+      }
+    } catch (_) {
+      if (mounted) setState(() => _loadingCopies = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = context.l10n;
+    final isEn = l.isEn;
+    final p = context.palette;
+
+    return Container(
+      height: MediaQuery.of(context).size.height * 0.85,
+      padding: const EdgeInsets.only(top: 16),
+      decoration: BoxDecoration(
+        color: p.card,
+        borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: Row(
+              children: [
+                const Icon(Icons.menu_book_rounded, color: AppColors.goldDark, size: 22),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    isEn ? 'Select Physical Book' : 'የሚገኙ መጻሕፍትን ይምረጡ',
+                    style: context.serif(17, weight: FontWeight.w700),
+                  ),
+                ),
+                IconButton(
+                  icon: const Icon(Icons.close_rounded),
+                  onPressed: () => Navigator.pop(context),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            child: TextField(
+              controller: _searchCtrl,
+              decoration: InputDecoration(
+                hintText: isEn ? 'Search by title or author...' : 'በርዕስ ወይም በደራሲ ፈልግ...',
+                prefixIcon: const Icon(Icons.search_rounded, size: 20),
+                suffixIcon: _searchCtrl.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear_rounded, size: 18),
+                        onPressed: () {
+                          _searchCtrl.clear();
+                          _search();
+                        },
+                      )
+                    : null,
+                isDense: true,
+                filled: true,
+                fillColor: p.fill,
+                border: OutlineInputBorder(borderRadius: BorderRadius.circular(10), borderSide: BorderSide.none),
+              ),
+              onSubmitted: (_) => _search(),
+            ),
+          ),
+          if (_categories.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  ChoiceChip(
+                    label: Text(l.all),
+                    selected: _selectedCatId == null,
+                    onSelected: (val) {
+                      if (val) {
+                        setState(() => _selectedCatId = null);
+                        _search();
+                      }
+                    },
+                  ),
+                  const SizedBox(width: 6),
+                  ..._categories.map((c) => Padding(
+                        padding: const EdgeInsets.only(right: 6),
+                        child: ChoiceChip(
+                          label: Text(isEn ? (c.nameEn ?? c.name) : c.name),
+                          selected: _selectedCatId == c.id,
+                          onSelected: (val) {
+                            setState(() => _selectedCatId = val ? c.id : null);
+                            _search();
+                          },
+                        ),
+                      )),
+                ],
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          const Divider(height: 1),
+          Expanded(
+            child: _selectedBook != null
+                ? _buildCopiesSelectionView(isEn, p, l)
+                : _buildBooksListView(isEn, p, l),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildBooksListView(bool isEn, Palette p, AppLocalizations l) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_books.isEmpty) {
+      return Center(
+        child: Text(
+          isEn ? 'No physical books found' : 'ምንም መጽሐፍ አልተገኘም',
+          style: TextStyle(color: p.muted),
+        ),
+      );
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(16),
+      itemCount: _books.length,
+      itemBuilder: (ctx, i) {
+        final b = _books[i];
+        final avail = b.effectiveAvailable;
+        final total = b.effectiveTotal;
+        final isAvailable = avail > 0;
+
+        return AppCard(
+          padding: const EdgeInsets.all(12),
+          onTap: isAvailable ? () => _selectBook(b) : null,
+          child: Row(
+            children: [
+              Container(
+                width: 44,
+                height: 56,
+                decoration: BoxDecoration(
+                  color: isAvailable ? const Color(0xFF650D20).withValues(alpha: 0.1) : Colors.grey.withValues(alpha: 0.1),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Icon(
+                  Icons.menu_book_rounded,
+                  color: isAvailable ? const Color(0xFF650D20) : Colors.grey,
+                  size: 24,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(b.title, style: context.serif(14.5, weight: FontWeight.w700)),
+                    if (b.author != null)
+                      Text(b.author!, style: context.sans(12, color: AppColors.goldDark, weight: FontWeight.w500)),
+                    const SizedBox(height: 4),
+                    Row(
+                      children: [
+                        if (b.categoryName != null) ...[
+                          Text(b.categoryName!, style: context.sans(11, color: p.muted)),
+                          const SizedBox(width: 8),
+                        ],
+                        Pill(
+                          isAvailable
+                              ? (isEn ? '$avail of $total Available' : '$avail ከ $total ይገኛሉ')
+                              : (isEn ? 'None Available' : 'አልተገኘም'),
+                          color: isAvailable ? AppColors.success : Colors.grey,
+                        ),
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+              if (isAvailable) const Icon(Icons.chevron_right_rounded, color: AppColors.goldDark),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
+  Widget _buildCopiesSelectionView(bool isEn, Palette p, AppLocalizations l) {
+    final b = _selectedBook!;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          color: p.fill,
+          child: Row(
+            children: [
+              IconButton(
+                icon: const Icon(Icons.arrow_back_rounded),
+                onPressed: () => setState(() => _selectedBook = null),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(b.title, style: context.serif(14.5, weight: FontWeight.w700), maxLines: 1, overflow: TextOverflow.ellipsis),
+                    Text(isEn ? 'Select an available copy below:' : 'ከዚህ በታች የሚገኝ ቅጅ ይምረጡ፡', style: context.sans(11.5, color: p.muted)),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: _loadingCopies
+              ? const Center(child: CircularProgressIndicator())
+              : _bookCopies.isEmpty
+                  ? Center(
+                      child: Text(
+                        isEn ? 'No available copies for this book' : 'ለዚህ መጽሐፍ የሚገኝ ቅጅ የለም',
+                        style: TextStyle(color: p.muted),
+                      ),
+                    )
+                  : ListView.builder(
+                      padding: const EdgeInsets.all(16),
+                      itemCount: _bookCopies.length,
+                      itemBuilder: (ctx, i) {
+                        final copy = _bookCopies[i];
+                        return AppCard(
+                                          padding: const EdgeInsets.all(12),
+                          onTap: () => Navigator.pop(context, copy.copyCode),
+                          child: Row(
+                            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                            children: [
+                              Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Pill(copy.copyCode, color: AppColors.goldDark),
+                                  const SizedBox(height: 6),
+                                  Row(
+                                    children: [
+                                      Pill(copyConditionLabel(l, copy.condition), color: copyConditionColor(copy.condition)),
+                                      if (copy.location != null) ...[
+                                        const SizedBox(width: 6),
+                                        Pill(copy.location!, color: p.muted),
+                                      ],
+                                    ],
+                                  ),
+                                ],
+                              ),
+                              FilledButton.tonal(
+                                onPressed: () => Navigator.pop(context, copy.copyCode),
+                                child: Text(isEn ? 'Select' : 'ምረጥ'),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
+        ),
+      ],
+    );
+  }
+}
+

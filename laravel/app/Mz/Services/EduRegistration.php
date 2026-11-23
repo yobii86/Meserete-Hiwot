@@ -32,7 +32,8 @@ final class EduRegistration
             $qb->where('c.academic_year_id', $academicYearId);
         }
 
-        $classes = $qb->orderBy('c.name')
+        $classes = $qb->orderByRaw('COALESCE(lvl.sort_order, 999) ASC')
+            ->orderBy('c.name')
             ->select(
                 'c.*',
                 'y.eth_year as ay_eth_year',
@@ -43,6 +44,7 @@ final class EduRegistration
                 'lvl.name as lvl_name',
                 'lvl.name_en as lvl_name_en',
                 'lvl.kind as lvl_kind',
+                'lvl.sort_order as lvl_sort_order',
                 DB::raw("(SELECT COUNT(*) FROM edu_enrollments e WHERE e.class_id = c.id AND e.status = 'active') as student_count")
             )->get();
 
@@ -50,7 +52,25 @@ final class EduRegistration
             ->leftJoin('users as t', 't.id', '=', 'co.teacher_user_id')
             ->whereIn('co.class_id', $classes->pluck('id')->all() ?: [0])
             ->orderBy('co.name')
-            ->get(['co.id', 'co.class_id', 'co.name', 't.full_name as teacher_name']);
+            ->get(['co.id', 'co.class_id', 'co.subject_id', 'co.name', 'co.code', 'co.mode', 'co.status', 'co.pass_mark', 'co.teacher_user_id', 't.full_name as teacher_name']);
+
+        $courseIds = $courses->pluck('id')->map(fn ($x) => (int) $x)->all();
+        $teachersByCourse = [];
+        if (! empty($courseIds)) {
+            $tRows = DB::table('edu_course_teachers as ct')
+                ->join('users as u', 'u.id', '=', 'ct.user_id')
+                ->whereIn('ct.course_id', $courseIds)
+                ->where('ct.status', 'active')
+                ->select('ct.course_id', 'u.id', 'u.full_name', 'u.phone')
+                ->get();
+            foreach ($tRows as $tr) {
+                $teachersByCourse[$tr->course_id][] = [
+                    'id' => (int) $tr->id,
+                    'full_name' => $tr->full_name,
+                    'phone' => $tr->phone,
+                ];
+            }
+        }
 
         return $classes->map(fn ($c) => [
             'id' => (int) $c->id,
@@ -82,12 +102,28 @@ final class EduRegistration
                 'name' => $c->lvl_name,
                 'name_en' => $c->lvl_name_en,
                 'kind' => $c->lvl_kind,
+                'sort_order' => $c->lvl_sort_order !== null ? (int) $c->lvl_sort_order : null,
             ] : null,
-            'courses' => $courses->where('class_id', $c->id)->values()->map(fn ($co) => [
-                'id' => (int) $co->id,
-                'name' => $co->name,
-                'teacher_name' => $co->teacher_name,
-            ])->all(),
+            'courses' => $courses->where('class_id', $c->id)->values()->map(function ($co) use ($teachersByCourse) {
+                $assignedTeachers = $teachersByCourse[(int) $co->id] ?? [];
+                $teacherName = $co->teacher_name;
+                if (! $teacherName && ! empty($assignedTeachers)) {
+                    $teacherName = implode(', ', array_column($assignedTeachers, 'full_name'));
+                }
+                return [
+                    'id' => (int) $co->id,
+                    'class_id' => (int) $co->class_id,
+                    'subject_id' => $co->subject_id ? (int) $co->subject_id : null,
+                    'name' => $co->name,
+                    'code' => $co->code ?? null,
+                    'mode' => $co->mode ?? 'physical',
+                    'status' => $co->status ?? 'active',
+                    'pass_mark' => $co->pass_mark !== null ? (float) $co->pass_mark : 50.0,
+                    'teacher_user_id' => $co->teacher_user_id ? (int) $co->teacher_user_id : null,
+                    'teacher_name' => $teacherName,
+                    'teachers' => $assignedTeachers,
+                ];
+            })->all(),
         ])->all();
     }
 

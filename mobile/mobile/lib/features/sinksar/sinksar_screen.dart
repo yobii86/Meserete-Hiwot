@@ -627,9 +627,11 @@ class _SinksarScreenState extends ConsumerState<SinksarScreen> {
                   children: [
                     const Icon(Icons.menu_book_outlined, size: 16, color: AppColors.goldDark),
                     const SizedBox(width: 6),
-                    Text(
-                      isEn ? 'Daily Commemoration Summary' : 'የዕለቱ ማጠቃለያ',
-                      style: context.sans(13, weight: FontWeight.bold, color: AppColors.goldDark),
+                    Expanded(
+                      child: Text(
+                        isEn ? 'Daily Commemoration Summary' : 'የዕለቱ ማጠቃለያ',
+                        style: context.sans(13, weight: FontWeight.bold, color: AppColors.goldDark),
+                      ),
                     ),
                   ],
                 ),
@@ -760,14 +762,14 @@ class _SinksarScreenState extends ConsumerState<SinksarScreen> {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Text(n.title, style: context.serif(18, weight: FontWeight.bold, color: AppColors.goldDark)),
+                  Text(n.title.replaceAll('dit*', '').replaceAll('d*', ''), style: context.serif(18, weight: FontWeight.bold, color: AppColors.goldDark)),
                   if (n.source != null) ...[
                     const SizedBox(height: 4),
                     Text('ምንጭ፦ ${n.source}', style: context.sans(12, color: AppColors.faint)),
                   ],
                   const Divider(height: 16),
                   Text(
-                    n.body,
+                    n.body.replaceAll('dit*', '').replaceAll('d*', ''),
                     style: context.serif(15, height: 1.8),
                   ),
                 ],
@@ -814,9 +816,11 @@ class _SinksarScreenState extends ConsumerState<SinksarScreen> {
       children: [
         Icon(icon, size: 20, color: AppColors.gold),
         const SizedBox(width: 8),
-        Text(
-          title,
-          style: context.serif(17, weight: FontWeight.bold, color: AppColors.goldDark),
+        Expanded(
+          child: Text(
+            title,
+            style: context.serif(17, weight: FontWeight.bold, color: AppColors.goldDark),
+          ),
         ),
       ],
     );

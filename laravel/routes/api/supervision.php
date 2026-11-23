@@ -137,3 +137,12 @@ Route::get('reports/export/{kind}', function (string $kind) {
     [$bytes, $type, $name] = \App\Mz\Services\ReportExport::export(Ctx::actx(), $kind, $format, $q);
     return response($bytes, 200, ['Content-Type' => $type, 'Content-Disposition' => "attachment; filename=\"$name\"", 'Cache-Control' => 'private, no-store']);
 })->middleware('mz');
+
+// Telegram Bot connection status & test (Admin)
+Route::get('supervision/telegram/status', function () {
+    return Http::ok(\App\Mz\Notifications\Telegram::testConnection());
+})->middleware('mz');
+
+Route::post('supervision/telegram/test', function () {
+    return Http::ok(\App\Mz\Notifications\Telegram::testConnection());
+})->middleware('mz');

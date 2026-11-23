@@ -246,6 +246,22 @@ class AudioController extends Notifier<PlayerUiState> {
     }
   }
 
+  Map<String, String>? _audioHeaders() {
+    final headers = <String, String>{};
+    try {
+      final store = ref.read(secureStoreProvider);
+      final cookie = store.imunifyCookie;
+      if (cookie != null && cookie.isNotEmpty) {
+        headers['Cookie'] = cookie;
+      }
+      final token = store.token;
+      if (token != null && token.isNotEmpty) {
+        headers['Authorization'] = 'Bearer $token';
+      }
+    } catch (_) {}
+    return headers.isEmpty ? null : headers;
+  }
+
   AudioSource _source(PlayerTrack t) {
     String? baseUrl;
     try {
@@ -256,7 +272,7 @@ class AudioController extends Notifier<PlayerUiState> {
       return AudioSource.file(t.source, tag: tag);
     }
     final resolved = _resolveTrackUrl(t.source);
-    return AudioSource.uri(Uri.parse(resolved), tag: tag);
+    return AudioSource.uri(Uri.parse(resolved), headers: _audioHeaders(), tag: tag);
   }
 
   Future<void> playQueue(List<PlayerTrack> tracks, {int start = 0, bool shuffle = false}) async {
@@ -274,12 +290,20 @@ class AudioController extends Notifier<PlayerUiState> {
       _trackPlay(start);
       unawaited(player.play());
     } catch (_) {
-      state = state.copyWith(error: true);
+      // If playback fails, try resolving Imunify challenge and retry once
+      try {
+        await ref.read(apiClientProvider).ensureImunifyResolved();
+        await player.setAudioSources(tracks.map(_source).toList(), initialIndex: start);
+        _trackPlay(start);
+        unawaited(player.play());
+      } catch (_) {
+        state = state.copyWith(error: true);
+      }
     }
   }
 
   Future<void> playSingle(PlayerTrack t) async {
-    if (state.current?.id == t.id) {
+    if (state.current?.id == t.id && !state.error) {
       if (!player.playing) {
         try {
           final narrationState = ref.read(narrationControllerProvider);
@@ -295,6 +319,10 @@ class AudioController extends Notifier<PlayerUiState> {
   }
 
   Future<void> toggle() async {
+    if (state.error && state.current != null) {
+      await retry();
+      return;
+    }
     if (player.playing) {
       await player.pause();
     } else {
@@ -304,7 +332,15 @@ class AudioController extends Notifier<PlayerUiState> {
           unawaited(ref.read(narrationControllerProvider.notifier).pause());
         }
       } catch (_) {}
+      state = state.copyWith(error: false);
       await player.play();
+    }
+  }
+
+  Future<void> retry() async {
+    if (state.current != null && state.queue.isNotEmpty) {
+      state = state.copyWith(error: false);
+      await playQueue(state.queue, start: state.index ?? 0, shuffle: state.shuffle);
     }
   }
   Future<void> seek(Duration d) => player.seek(d);

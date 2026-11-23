@@ -294,14 +294,37 @@ class AttendanceConflictsScreen extends ConsumerStatefulWidget {
 
 class _AttendanceConflictsScreenState extends ConsumerState<AttendanceConflictsScreen> {
   final _ctrl = PagedListController<Json>();
+  final _batchesCtrl = PagedListController<Json>();
   String _status = 'open';
+  String? _batchId;
+  bool _viewBatches = true;
 
   Future<void> _resolve(Json c, String decision) async {
     final l = context.l10n;
     final note = await promptText(context, title: decision == 'accept' ? l.attConflictAccept : l.attConflictReject, label: l.attDecisionNote, maxLines: 2, required: true);
     if (note == null || note.trim().isEmpty || !mounted) return;
     final r = await runWithProgress(context, () => ref.read(stageRepositoryProvider).resolveAttendanceConflict(asIntOr(c['id']), decision: decision, note: note.trim()), success: l.saved);
-    if (r != null) await _ctrl.refresh();
+    if (r != null) {
+      await _ctrl.refresh();
+      await _batchesCtrl.refresh();
+    }
+  }
+
+  Future<void> _resolveBatch(Json b, String decision) async {
+    final l = context.l10n;
+    final batchId = asStr(b['batch_id']);
+    if (batchId == null) return;
+    final isAm = Localizations.localeOf(context).languageCode == 'am';
+    final actionTitle = decision == 'accept'
+        ? (isAm ? 'ቡድኑን ተቀበል' : 'Accept Batch')
+        : (isAm ? 'ቡድኑን አትቀበል' : 'Reject Batch');
+    final note = await promptText(context, title: actionTitle, label: l.attDecisionNote, maxLines: 2, required: true);
+    if (note == null || note.trim().isEmpty || !mounted) return;
+    final r = await runWithProgress(context, () => ref.read(stageRepositoryProvider).bulkResolveAttendanceConflicts(batchId: batchId, decision: decision, note: note.trim()), success: l.saved);
+    if (r != null) {
+      await _batchesCtrl.refresh();
+      await _ctrl.refresh();
+    }
   }
 
   Future<void> _signature(Json c) async {
@@ -327,6 +350,7 @@ class _AttendanceConflictsScreenState extends ConsumerState<AttendanceConflictsS
   Widget build(BuildContext context) {
     final l = context.l10n;
     final p = context.palette;
+    final isAm = Localizations.localeOf(context).languageCode == 'am';
     final f = Formatters(l, Localizations.localeOf(context).languageCode);
     final canResolve = ref.watch(currentUserProvider)?.can(Perm.attendanceOverride) ?? false;
     return AdminScaffold(
@@ -334,70 +358,179 @@ class _AttendanceConflictsScreenState extends ConsumerState<AttendanceConflictsS
       body: Column(children: [
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-          child: Row(children: [
-            for (final s in const ['open', 'accepted', 'rejected'])
-              Padding(
-                padding: const EdgeInsets.only(right: 6),
-                child: ChoiceChip(
-                  label: Text(switch (s) { 'accepted' => l.approved, 'rejected' => l.rejected, _ => l.pending }),
-                  selected: _status == s,
-                  onSelected: (_) => setState(() => _status = s),
-                ),
+          child: SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(children: [
+              SegmentedButton<bool>(
+                segments: [
+                  ButtonSegment(value: true, label: Text(isAm ? 'በቡድን' : 'Batches'), icon: const Icon(Icons.folder_outlined, size: 16)),
+                  ButtonSegment(value: false, label: Text(isAm ? 'ነጠላ' : 'Individual'), icon: const Icon(Icons.list_outlined, size: 16)),
+                ],
+                selected: {_viewBatches},
+                onSelectionChanged: (s) => setState(() {
+                  _viewBatches = s.first;
+                  if (_viewBatches) {
+                    _batchId = null;
+                    if (_status == 'accepted' || _status == 'rejected') _status = 'resolved';
+                  } else {
+                    if (_status == 'resolved') _status = 'open';
+                  }
+                }),
               ),
-          ]),
+              const SizedBox(width: 8),
+              for (final s in _viewBatches ? const ['open', 'resolved'] : const ['open', 'accepted', 'rejected'])
+                Padding(
+                  padding: const EdgeInsets.only(left: 6),
+                  child: ChoiceChip(
+                    label: Text(switch (s) { 'accepted' => l.approved, 'rejected' => l.rejected, 'resolved' => (isAm ? 'የተገመገሙ' : 'Resolved'), _ => l.pending }),
+                    selected: _status == s,
+                    onSelected: (_) => setState(() => _status = s),
+                  ),
+                ),
+            ]),
+          ),
         ),
+        if (_batchId != null)
+          Container(
+            margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration: BoxDecoration(color: p.muted.withValues(alpha: 0.1), borderRadius: BorderRadius.circular(8)),
+            child: Row(children: [
+              Icon(Icons.filter_alt, size: 16, color: p.muted),
+              const SizedBox(width: 6),
+              Expanded(child: Text('${isAm ? "የተመረጠ ቡድን" : "Selected batch"}: ${_batchId!.length > 8 ? _batchId!.substring(0, 8) : _batchId}...', style: context.sans(12, color: p.text))),
+              IconButton(icon: const Icon(Icons.close, size: 18), onPressed: () => setState(() => _batchId = null), tooltip: isAm ? 'ሁሉንም አሳይ' : 'Show all'),
+            ]),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
           child: Text(l.attConflictsHint, style: context.sans(12, color: p.muted)),
         ),
         Expanded(
-          child: PagedListView<Json>(
-            key: ValueKey(_status),
-            controller: _ctrl,
-            fetch: (page) => ref.read(stageRepositoryProvider).attendanceConflicts(status: _status, page: page),
-            emptyMessage: l.attConflictsEmpty,
-            emptyIcon: Icons.cloud_done_outlined,
-            separator: const SizedBox(height: 8),
-            itemBuilder: (context, c, _) {
-              final captured = DateTime.tryParse(asStr(c['captured_at']) ?? '')?.toLocal();
-              final payload = asJson(c['payload']);
-              return AppCard(
-                key: ValueKey('conflict-${c['id']}'),
-                padding: const EdgeInsets.all(14),
-                child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                  Text(c['full_name'] == null ? _kind(l, asStr(c['kind'])) : '${c['full_name']}', style: context.serif(15, color: p.text)),
-                  Text(
-                    [
-                      '${c['program_title'] ?? ''}',
-                      if (asStr(c['occurrence_date']) != null) f.date(Formatters.parseDateOnly(asStr(c['occurrence_date']))),
-                    ].join(' · '),
-                    style: context.sans(12, color: p.muted),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    [
-                      _kind(l, asStr(c['kind'])),
-                      if (asStr(payload['status']) != null) attendanceStatusLabel(l, asStr(payload['status'])),
-                      if (captured != null) l.attCapturedAt(f.dateTime(captured)),
-                    ].join(' · '),
-                    style: context.sans(13, weight: FontWeight.w600),
-                  ),
-                  Text(errorText(l, ApiException(code: asStr(c['code']) ?? ApiException.unknown)), style: context.sans(12, color: AppColors.danger)),
-                  Text('${l.attSubmittedBy}: ${c['submitted_by_name'] ?? '—'}', style: context.sans(11, color: p.muted)),
-                  if (c['status'] != 'open') Text('${c['resolved_by_name'] ?? ''} · ${c['resolution_note'] ?? ''}', style: context.sans(11, color: p.muted)),
-                  Row(mainAxisAlignment: MainAxisAlignment.end, children: [
-                    if (c['has_signature'] == true) TextButton.icon(onPressed: () => _signature(c), icon: const Icon(Icons.draw_rounded, size: 18), label: Text(l.attSigned)),
-                    const Spacer(),
-                    if (c['status'] == 'open' && canResolve) ...[
-                      TextButton(onPressed: () => _resolve(c, 'reject'), child: Text(l.attConflictReject, style: const TextStyle(color: AppColors.danger))),
-                      const SizedBox(width: 8),
-                      FilledButton(onPressed: () => _resolve(c, 'accept'), child: Text(l.attConflictAccept)),
-                    ],
-                  ]),
-                ]),
-              );
-            },
-          ),
+          child: _viewBatches
+              ? PagedListView<Json>(
+                  key: ValueKey('batches-$_status'),
+                  controller: _batchesCtrl,
+                  fetch: (page) => ref.read(stageRepositoryProvider).attendanceConflictBatches(status: _status, page: page),
+                  emptyMessage: l.attConflictsEmpty,
+                  emptyIcon: Icons.cloud_done_outlined,
+                  separator: const SizedBox(height: 8),
+                  itemBuilder: (context, b, _) {
+                    final total = asIntOr(b['total_conflicts'], 0);
+                    final open = asIntOr(b['open_count'], 0);
+                    final accepted = asIntOr(b['accepted_count'], 0);
+                    final rejected = asIntOr(b['rejected_count'], 0);
+                    return AppCard(
+                      key: ValueKey('batch-${b['batch_id']}'),
+                      padding: const EdgeInsets.all(14),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Row(children: [
+                          Expanded(
+                            child: Text('${b['program_title'] ?? ''}', style: context.serif(15, color: p.text)),
+                          ),
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                            decoration: BoxDecoration(
+                              color: open > 0 ? AppColors.warning.withValues(alpha: 0.15) : AppColors.success.withValues(alpha: 0.15),
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              open > 0 ? (isAm ? '$open ክፍት' : '$open open') : (isAm ? 'የተገመገመ' : 'Resolved'),
+                              style: context.sans(11, weight: FontWeight.w600, color: open > 0 ? AppColors.warning : AppColors.success),
+                            ),
+                          ),
+                        ]),
+                        Text(
+                          [
+                            if (asStr(b['occurrence_date']) != null) f.date(Formatters.parseDateOnly(asStr(b['occurrence_date']))),
+                            isAm ? '$total አባላት' : '$total members',
+                          ].join(' · '),
+                          style: context.sans(12, color: p.muted),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          errorText(l, ApiException(code: asStr(b['primary_code']) ?? ApiException.unknown)),
+                          style: context.sans(12, color: AppColors.danger),
+                        ),
+                        Text('${l.attSubmittedBy}: ${b['submitted_by_name'] ?? '—'}', style: context.sans(11, color: p.muted)),
+                        if (accepted > 0 || rejected > 0)
+                          Text(
+                            isAm ? 'ውጤት: $accepted ተቀባይነት አግኝቷል · $rejected አልተቀበለም' : 'Status: $accepted accepted · $rejected rejected',
+                            style: context.sans(11, color: p.muted),
+                          ),
+                        Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                          TextButton.icon(
+                            onPressed: () => setState(() {
+                              _batchId = asStr(b['batch_id']);
+                              _viewBatches = false;
+                            }),
+                            icon: const Icon(Icons.people_alt_outlined, size: 18),
+                            label: Text(isAm ? 'አባላትን አሳይ' : 'Inspect members'),
+                          ),
+                          const Spacer(),
+                          if (open > 0 && canResolve) ...[
+                            TextButton(
+                              onPressed: () => _resolveBatch(b, 'reject'),
+                              child: Text(isAm ? 'ሁሉንም አትቀበል' : 'Reject all', style: const TextStyle(color: AppColors.danger)),
+                            ),
+                            const SizedBox(width: 8),
+                            FilledButton(
+                              onPressed: () => _resolveBatch(b, 'accept'),
+                              child: Text(isAm ? 'ሁሉንም ተቀበል' : 'Accept all'),
+                            ),
+                          ],
+                        ]),
+                      ]),
+                    );
+                  },
+                )
+              : PagedListView<Json>(
+                  key: ValueKey('conflicts-$_status-$_batchId'),
+                  controller: _ctrl,
+                  fetch: (page) => ref.read(stageRepositoryProvider).attendanceConflicts(status: _status, batchId: _batchId, page: page),
+                  emptyMessage: l.attConflictsEmpty,
+                  emptyIcon: Icons.cloud_done_outlined,
+                  separator: const SizedBox(height: 8),
+                  itemBuilder: (context, c, _) {
+                    final captured = DateTime.tryParse(asStr(c['captured_at']) ?? '')?.toLocal();
+                    final payload = asJson(c['payload']);
+                    return AppCard(
+                      key: ValueKey('conflict-${c['id']}'),
+                      padding: const EdgeInsets.all(14),
+                      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                        Text(c['full_name'] == null ? _kind(l, asStr(c['kind'])) : '${c['full_name']}', style: context.serif(15, color: p.text)),
+                        Text(
+                          [
+                            '${c['program_title'] ?? ''}',
+                            if (asStr(c['occurrence_date']) != null) f.date(Formatters.parseDateOnly(asStr(c['occurrence_date']))),
+                          ].join(' · '),
+                          style: context.sans(12, color: p.muted),
+                        ),
+                        const SizedBox(height: 6),
+                        Text(
+                          [
+                            _kind(l, asStr(c['kind'])),
+                            if (asStr(payload['status']) != null) attendanceStatusLabel(l, asStr(payload['status'])),
+                            if (captured != null) l.attCapturedAt(f.dateTime(captured)),
+                          ].join(' · '),
+                          style: context.sans(13, weight: FontWeight.w600),
+                        ),
+                        Text(errorText(l, ApiException(code: asStr(c['code']) ?? ApiException.unknown)), style: context.sans(12, color: AppColors.danger)),
+                        Text('${l.attSubmittedBy}: ${c['submitted_by_name'] ?? '—'}', style: context.sans(11, color: p.muted)),
+                        if (c['status'] != 'open') Text('${c['resolved_by_name'] ?? ''} · ${c['resolution_note'] ?? ''}', style: context.sans(11, color: p.muted)),
+                        Row(mainAxisAlignment: MainAxisAlignment.end, children: [
+                          if (c['has_signature'] == true) TextButton.icon(onPressed: () => _signature(c), icon: const Icon(Icons.draw_rounded, size: 18), label: Text(l.attSigned)),
+                          const Spacer(),
+                          if (c['status'] == 'open' && canResolve) ...[
+                            TextButton(onPressed: () => _resolve(c, 'reject'), child: Text(l.attConflictReject, style: const TextStyle(color: AppColors.danger))),
+                            const SizedBox(width: 8),
+                            FilledButton(onPressed: () => _resolve(c, 'accept'), child: Text(l.attConflictAccept)),
+                          ],
+                        ]),
+                      ]),
+                    );
+                  },
+                ),
         ),
       ]),
     );
@@ -932,15 +1065,17 @@ class _ProgramOccurrencesScreenState extends ConsumerState<ProgramOccurrencesScr
     final l = context.l10n;
     final date = asStr(o['date'])!;
     final cancelled = o['cancelled'] == true;
+    final suspended = o['suspended'] == true;
     final action = await showModalBottomSheet<String>(
       context: context,
       showDragHandle: true,
       useRootNavigator: true,
       builder: (ctx) => SafeArea(
         child: Column(mainAxisSize: MainAxisSize.min, children: [
-          if (!cancelled) ListTile(leading: const Icon(Icons.event_busy_rounded, color: AppColors.danger), title: Text(l.occCancel), onTap: () => Navigator.pop(ctx, 'cancelled')),
-          if (!cancelled) ListTile(leading: const Icon(Icons.schedule_rounded), title: Text(l.occReschedule), onTap: () => Navigator.pop(ctx, 'rescheduled')),
-          if (cancelled || o['rescheduled'] == true) ListTile(leading: const Icon(Icons.restore_rounded), title: Text(l.occRestore), onTap: () => Navigator.pop(ctx, 'restore')),
+          if (!cancelled && !suspended) ListTile(leading: const Icon(Icons.pause_circle_outline_rounded, color: Colors.orange), title: Text(l.isEn ? 'Suspend Occurrence' : 'የዕለቱን ፕሮግራም አግድ'), onTap: () => Navigator.pop(ctx, 'suspended')),
+          if (!cancelled && !suspended) ListTile(leading: const Icon(Icons.event_busy_rounded, color: AppColors.danger), title: Text(l.occCancel), onTap: () => Navigator.pop(ctx, 'cancelled')),
+          if (!cancelled && !suspended) ListTile(leading: const Icon(Icons.schedule_rounded), title: Text(l.occReschedule), onTap: () => Navigator.pop(ctx, 'rescheduled')),
+          if (cancelled || suspended || o['rescheduled'] == true) ListTile(leading: const Icon(Icons.restore_rounded), title: Text(l.occRestore), onTap: () => Navigator.pop(ctx, 'restore')),
         ]),
       ),
     );
@@ -971,7 +1106,12 @@ class _ProgramOccurrencesScreenState extends ConsumerState<ProgramOccurrencesScr
     }
     String? reason;
     if (action != 'restore') {
-      reason = await promptText(context, title: action == 'cancelled' ? l.occCancel : l.occReschedule, label: l.reason, maxLines: 2, required: true);
+      final title = action == 'cancelled'
+          ? l.occCancel
+          : (action == 'suspended'
+              ? (l.isEn ? 'Suspend Occurrence' : 'የዕለቱን ፕሮግራም አግድ')
+              : l.occReschedule);
+      reason = await promptText(context, title: title, label: l.reason, maxLines: 2, required: true);
       if (reason == null || reason.trim().isEmpty || !mounted) return;
     }
     final r = await runWithProgress(
@@ -1002,20 +1142,42 @@ class _ProgramOccurrencesScreenState extends ConsumerState<ProgramOccurrencesScr
           return ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 32), children: [
             Text(l.occHint, style: context.sans(12, color: p.muted)),
             const SizedBox(height: 8),
-            for (final o in snap.data!)
-              ListTile(
-                contentPadding: EdgeInsets.zero,
-                leading: Icon(o['cancelled'] == true ? Icons.event_busy_rounded : (o['rescheduled'] == true ? Icons.schedule_rounded : Icons.event_rounded), color: o['cancelled'] == true ? AppColors.danger : null),
-                title: Text(f.date(Formatters.parseDateOnly(asStr(o['date'])), withWeekday: true), style: TextStyle(decoration: o['cancelled'] == true ? TextDecoration.lineThrough : null)),
-                subtitle: Text([
-                  if (o['rescheduled'] == true) '→ ${f.dateTime(asDate(o['starts_at']))}',
-                  if (o['cancelled'] == true) l.occCancelled,
-                  if (asStr(o['reason']) != null) '${o['reason']}',
-                  if (o['closed'] == true && o['cancelled'] != true) l.attClosed,
-                ].join(' · ')),
-                trailing: const Icon(Icons.more_vert_rounded),
-                onTap: () => _change(o),
-              ),
+            for (final o in snap.data!) ...[
+              () {
+                final isCancelled = o['cancelled'] == true;
+                final isSuspended = o['suspended'] == true || asStr(o['status']) == 'suspended';
+                final isRescheduled = o['rescheduled'] == true;
+                return ListTile(
+                  contentPadding: EdgeInsets.zero,
+                  leading: Icon(
+                    isCancelled
+                        ? Icons.event_busy_rounded
+                        : (isSuspended
+                            ? Icons.pause_circle_outline_rounded
+                            : (isRescheduled ? Icons.schedule_rounded : Icons.event_rounded)),
+                    color: isCancelled
+                        ? AppColors.danger
+                        : (isSuspended ? Colors.orange : null),
+                  ),
+                  title: Text(
+                    f.date(Formatters.parseDateOnly(asStr(o['date'])), withWeekday: true),
+                    style: TextStyle(
+                      decoration: (isCancelled || isSuspended) ? TextDecoration.lineThrough : null,
+                      color: isSuspended ? Colors.orange.shade800 : null,
+                    ),
+                  ),
+                  subtitle: Text([
+                    if (isSuspended) (l.isEn ? 'Suspended' : 'የታገደ'),
+                    if (isCancelled) l.occCancelled,
+                    if (isRescheduled) '→ ${f.dateTime(asDate(o['starts_at']))}',
+                    if (asStr(o['reason']) != null) '${o['reason']}',
+                    if (o['closed'] == true && !isCancelled && !isSuspended) l.attClosed,
+                  ].join(' · ')),
+                  trailing: const Icon(Icons.more_vert_rounded),
+                  onTap: () => _change(o),
+                );
+              }(),
+            ],
           ]);
         },
       ),

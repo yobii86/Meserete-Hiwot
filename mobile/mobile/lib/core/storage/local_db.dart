@@ -24,7 +24,7 @@ class LocalDb {
     final dbPath = path ?? (kIsWeb ? 'mezmur_zelideta.db' : p.join(await getDatabasesPath(), 'mezmur_zelideta.db'));
     final db = await openDatabase(
       dbPath,
-      version: 5,
+      version: 6,
       onUpgrade: (db, from, _) async {
         if (from < 2) await db.execute('ALTER TABLE reminders ADD COLUMN borrowing_id INTEGER');
         if (from < 3) await _createDirectory(db);
@@ -36,6 +36,10 @@ class LocalDb {
           await db.execute('ALTER TABLE cache ADD COLUMN is_sealed INTEGER NOT NULL DEFAULT 0');
           await db.execute('ALTER TABLE cache ADD COLUMN perm_hash TEXT');
           await db.execute('ALTER TABLE cache ADD COLUMN required_perm TEXT');
+        }
+        if (from < 6) {
+          await db.execute('CREATE TABLE IF NOT EXISTS book_favorites (book_id INTEGER, user_id INTEGER, json TEXT, PRIMARY KEY (book_id, user_id))');
+          await db.execute('CREATE INDEX IF NOT EXISTS idx_book_favorites_user ON book_favorites(user_id)');
         }
       },
       onCreate: (db, _) async {
@@ -81,6 +85,8 @@ class LocalDb {
             notification_id INTEGER NOT NULL
           )''');
         await db.execute('CREATE TABLE favorites (mezmur_id INTEGER PRIMARY KEY, json TEXT)');
+        await db.execute('CREATE TABLE IF NOT EXISTS book_favorites (book_id INTEGER, user_id INTEGER, json TEXT, PRIMARY KEY (book_id, user_id))');
+        await db.execute('CREATE INDEX IF NOT EXISTS idx_book_favorites_user ON book_favorites(user_id)');
         await db.execute('''
           CREATE TABLE cache (
             key TEXT PRIMARY KEY,

@@ -44,6 +44,23 @@
     <style>@keyframes spin { to { transform: rotate(360deg); } }</style>
   </div>
   <script>
+    // Invalidate stale caches from previous web releases safely
+    if ('caches' in window) {
+      caches.keys().then(function(names) {
+        for (var i = 0; i < names.length; i++) {
+          if (names[i].indexOf('flutter') !== -1 || names[i].indexOf('app-cache') !== -1) {
+            caches.delete(names[i]);
+          }
+        }
+      });
+    }
+    if ('serviceWorker' in navigator) {
+      navigator.serviceWorker.getRegistrations().then(function(registrations) {
+        for (var i = 0; i < registrations.length; i++) {
+          registrations[i].unregister();
+        }
+      });
+    }
     window.addEventListener('flutter-first-frame', function () {
       var el = document.getElementById('loading');
       if (el) {
@@ -52,6 +69,6 @@
       }
     });
   </script>
-  <script src="flutter_bootstrap.js" async></script>
+  <script src="flutter_bootstrap.js?v=1.5.3_34" async></script>
 </body>
 </html>

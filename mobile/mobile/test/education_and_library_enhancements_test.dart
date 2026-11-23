@@ -19,8 +19,15 @@ import 'package:mezmur_zelideta/repositories/providers.dart';
 import 'package:mezmur_zelideta/core/providers.dart';
 import 'package:mezmur_zelideta/repositories/superapp_repositories.dart';
 import 'package:mezmur_zelideta/services/book_vault.dart';
-
+import 'package:mezmur_zelideta/services/favorites_service.dart';
 import 'fakes.dart';
+
+class _FakeBookFavoritesNotifier extends BookFavoritesController {
+  @override
+  Set<int> build() => const {};
+  @override
+  bool isFavorite(int id, [bool? fallback]) => fallback ?? false;
+}
 
 Future<({ApiClient api, SecureStore store})> _createApi(FakeAdapter adapter) async {
   FlutterSecureStorage.setMockInitialValues({
@@ -293,20 +300,25 @@ void main() {
       );
 
       await tester.pumpWidget(
-        MaterialApp(
-          theme: AppTheme.light(),
-          localizationsDelegates: const [
-            AppLocalizations.delegate,
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
+        ProviderScope(
+          overrides: [
+            bookFavoritesProvider.overrideWith(_FakeBookFavoritesNotifier.new),
           ],
-          supportedLocales: const [Locale('am'), Locale('en')],
-          locale: const Locale('am'),
-          home: Scaffold(
-            body: BookCard(
-              book: activeLoanBook,
-              onChanged: () {},
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            supportedLocales: const [Locale('am'), Locale('en')],
+            locale: const Locale('am'),
+            home: Scaffold(
+              body: BookCard(
+                book: activeLoanBook,
+                onChanged: () {},
+              ),
             ),
           ),
         ),
@@ -331,20 +343,25 @@ void main() {
       );
 
       await tester.pumpWidget(
-        MaterialApp(
-          theme: AppTheme.light(),
-          localizationsDelegates: const [
-            AppLocalizations.delegate,
-            GlobalMaterialLocalizations.delegate,
-            GlobalWidgetsLocalizations.delegate,
-            GlobalCupertinoLocalizations.delegate,
+        ProviderScope(
+          overrides: [
+            bookFavoritesProvider.overrideWith(_FakeBookFavoritesNotifier.new),
           ],
-          supportedLocales: const [Locale('am'), Locale('en')],
-          locale: const Locale('am'),
-          home: Scaffold(
-            body: BookCard(
-              book: digitalNoFileBook,
-              onChanged: () {},
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+              GlobalCupertinoLocalizations.delegate,
+            ],
+            supportedLocales: const [Locale('am'), Locale('en')],
+            locale: const Locale('am'),
+            home: Scaffold(
+              body: BookCard(
+                book: digitalNoFileBook,
+                onChanged: () {},
+              ),
             ),
           ),
         ),

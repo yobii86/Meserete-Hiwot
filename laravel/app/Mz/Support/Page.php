@@ -40,7 +40,10 @@ final class Page
         } else {
             $total = (int) $count->count();
         }
-        $items = (clone $qb)->limit($p['limit'])->offset($p['offset'])->get()->all();
-        return ['items' => $items, 'meta' => ['page' => $p['page'], 'limit' => $p['limit'], 'total' => $total, 'pages' => (int) ceil($total / $p['limit'])]];
+        $limit = max(1, (int) ($p['limit'] ?? $p['per_page'] ?? 20));
+        $page = max(1, (int) ($p['page'] ?? 1));
+        $offset = isset($p['offset']) ? (int) $p['offset'] : ($page - 1) * $limit;
+        $items = (clone $qb)->limit($limit)->offset($offset)->get()->all();
+        return ['items' => $items, 'meta' => ['page' => $page, 'limit' => $limit, 'total' => $total, 'pages' => (int) ceil($total / $limit)]];
     }
 }

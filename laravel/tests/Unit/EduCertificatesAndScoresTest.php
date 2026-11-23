@@ -164,12 +164,15 @@ class EduCertificatesAndScoresTest extends TestCase
                 $table->unsignedBigInteger('subject_id')->nullable();
                 $table->unsignedBigInteger('unit_id')->nullable();
                 $table->string('title');
+                $table->string('title_en')->nullable();
                 $table->text('summary')->nullable();
+                $table->text('summary_en')->nullable();
                 $table->text('body')->nullable();
                 $table->string('video_url')->nullable();
                 $table->integer('est_minutes')->nullable();
                 $table->integer('duration_minutes')->nullable();
                 $table->tinyInteger('is_mandatory')->default(1);
+                $table->boolean('requires_quiz')->default(false);
                 $table->string('status')->default('published');
                 $table->dateTime('published_at')->nullable();
                 $table->text('scripture_refs')->nullable();
@@ -188,6 +191,7 @@ class EduCertificatesAndScoresTest extends TestCase
                 $table->dateTime('completed_at')->nullable();
                 $table->dateTime('last_accessed_at')->nullable();
                 $table->dateTime('last_opened_at')->nullable();
+                $table->boolean('bookmarked')->default(false);
                 $table->timestamps();
                 $table->unique(['user_id', 'lesson_id']);
             });

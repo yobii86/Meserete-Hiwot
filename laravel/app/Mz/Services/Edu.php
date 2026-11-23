@@ -15,6 +15,7 @@ use DateTimeImmutable;
 use DateTimeInterface;
 use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * ትምህርት (education): classes with courses, weekly schedules, self-enrollment within a
@@ -23,7 +24,7 @@ use Illuminate\Support\Facades\DB;
  */
 final class Edu
 {
-    private const CLASS_FIELDS = ['name', 'description', 'term', 'academic_year', 'semester', 'department_id', 'streams', 'registration_opens_at', 'registration_closes_at', 'allow_regular', 'allow_distance', 'capacity', 'status', 'academic_year_id', 'term_id', 'level_id', 'allow_multiple'];
+    private const CLASS_FIELDS = ['name', 'name_en', 'description', 'description_en', 'term', 'academic_year', 'semester', 'department_id', 'streams', 'registration_opens_at', 'registration_closes_at', 'allow_regular', 'allow_distance', 'allow_self_registration', 'capacity', 'status', 'academic_year_id', 'term_id', 'level_id', 'allow_multiple'];
     private const COURSE_FIELDS = ['name', 'code', 'description', 'teacher_user_id', 'status', 'subject_id', 'term_id', 'member_groups', 'mode', 'pass_mark'];
 
     /** A catalog subject given to a class subject must exist (it is never set automatically). */
@@ -121,12 +122,22 @@ final class Edu
     public static function myCourseIds(int $userId): array
     {
         $validAdded = ['added', 'retake', 'distance', 'enrolled'];
+        $hasCourseStatus = Schema::hasColumn('edu_courses', 'status');
         $fromClasses = DB::table('edu_courses as co')
             ->join('edu_enrollments as e', fn ($j) => $j->on('e.class_id', '=', 'co.class_id')->where('e.user_id', '=', $userId)->where('e.status', '=', 'active'))
+            ->join('edu_classes as c', fn ($j) => $j->on('c.id', '=', 'co.class_id')->where('c.status', '=', 'active'))
             ->leftJoin('edu_course_enrollments as ce', fn ($j) => $j->on('ce.course_id', '=', 'co.id')->where('ce.user_id', '=', $userId))
             ->where(fn ($w) => $w->whereNull('ce.status')->orWhereIn('ce.status', $validAdded))
+            ->when($hasCourseStatus, fn ($q) => $q->where('co.status', '=', 'active'))
             ->pluck('co.id')->all();
-        $added = DB::table('edu_course_enrollments')->where('user_id', $userId)->whereIn('status', $validAdded)->pluck('course_id')->all();
+        $added = DB::table('edu_course_enrollments as ce')
+            ->join('edu_courses as co', 'co.id', '=', 'ce.course_id')
+            ->join('edu_classes as c', 'c.id', '=', 'co.class_id')
+            ->where('ce.user_id', $userId)
+            ->whereIn('ce.status', $validAdded)
+            ->where('c.status', '=', 'active')
+            ->when($hasCourseStatus, fn ($q) => $q->where('co.status', '=', 'active'))
+            ->pluck('ce.course_id')->all();
         return array_values(array_unique(array_map('intval', array_merge($fromClasses, $added))));
     }
 
@@ -138,7 +149,10 @@ final class Edu
 
     private static function assertAttendance(AuthContext $auth, int $classId): void
     {
-        self::getClass($classId);
+        $class = self::getClass($classId);
+        if ($class->status !== 'active' && ! self::isModerator($auth)) {
+            throw ApiError::forbidden('CLASS_CLOSED', 'This class is currently closed');
+        }
         if (self::isModerator($auth) || $auth->can('attendance.manage')) return;
         if (DB::table('edu_class_staff')->where(['class_id' => $classId, 'user_id' => $auth->id])->exists()) return;
         if (! DB::table('edu_course_teachers as ct')->join('edu_courses as co', 'co.id', '=', 'ct.course_id')->where(['co.class_id' => $classId, 'ct.user_id' => $auth->id, 'ct.status' => 'active'])->exists()) throw ApiError::forbidden('NOT_ATTENDANCE_TAKER', 'You do not take attendance for this class');
@@ -164,8 +178,11 @@ final class Edu
 
     private static function assertClassMember(AuthContext $auth, int $classId): void
     {
-        self::getClass($classId);
+        $class = self::getClass($classId);
         if (self::isModerator($auth)) return;
+        if ($class->status !== 'active') {
+            throw ApiError::forbidden('CLASS_CLOSED', 'This class is currently closed');
+        }
         if (self::enrollment($classId, $auth->id)) return;
         if (self::hasAddedSubject($classId, $auth->id)) return;
         if (DB::table('edu_course_teachers as ct')->join('edu_courses as co', 'co.id', '=', 'ct.course_id')->where(['co.class_id' => $classId, 'ct.user_id' => $auth->id, 'ct.status' => 'active'])->exists()) return;
@@ -188,49 +205,114 @@ final class Edu
     {
         $academicYear = null;
         if (! empty($c->academic_year_id)) {
-            $academicYear = [
-                'id' => (int) $c->academic_year_id,
-                'eth_year' => isset($c->ay_eth_year) ? (int) $c->ay_eth_year : (int) ($c->academic_year ?? 0),
-                'name' => $c->ay_name ?? ($c->academic_year ?? ''),
-                'is_current' => ! empty($c->ay_is_current),
-            ];
+            $ayName = $c->ay_name ?? null;
+            $ayEthYear = isset($c->ay_eth_year) ? (int) $c->ay_eth_year : null;
+            $ayIsCurrent = ! empty($c->ay_is_current);
+
+            if (empty($ayName) && empty($ayEthYear)) {
+                $y = DB::table('edu_academic_years')->where('id', $c->academic_year_id)->first();
+                if ($y) {
+                    $ayName = $y->name;
+                    $ayEthYear = (int) $y->eth_year;
+                    $ayIsCurrent = (bool) $y->is_current;
+                }
+            }
+
+            if (! empty($ayName) || (! empty($ayEthYear) && $ayEthYear > 0)) {
+                $academicYear = [
+                    'id' => (int) $c->academic_year_id,
+                    'eth_year' => $ayEthYear ?: (int) ($c->academic_year ?? 0),
+                    'name' => $ayName ?: ($ayEthYear ? "{$ayEthYear} ዓ.ም" : (is_string($c->academic_year ?? null) ? $c->academic_year : '')),
+                    'is_current' => $ayIsCurrent,
+                ];
+            }
+        } elseif (! empty($c->academic_year) && is_string($c->academic_year)) {
+            $ayStr = trim($c->academic_year);
+            if ($ayStr !== '' && ! str_starts_with($ayStr, '{')) {
+                $digits = (int) preg_replace('/\D/', '', $ayStr);
+                $academicYear = [
+                    'id' => null,
+                    'eth_year' => $digits > 1900 ? $digits : 0,
+                    'name' => $ayStr,
+                    'is_current' => false,
+                ];
+            }
         }
+
         $termObj = null;
+        $termStr = $c->term ?? null;
         if (! empty($c->term_id)) {
+            $tmName = $c->tm_name ?? null;
+            if (empty($tmName)) {
+                $tRow = DB::table('edu_terms')->where('id', $c->term_id)->first();
+                $tmName = $tRow?->name;
+            }
+            $termStr = $tmName ?: $termStr;
             $termObj = [
                 'id' => (int) $c->term_id,
-                'name' => $c->tm_name ?? ($c->term ?? ''),
+                'name' => $termStr ?? '',
             ];
         }
+
         $levelObj = null;
+        $gradeStr = null;
         if (! empty($c->level_id)) {
+            $lvlName = $c->lvl_name ?? null;
+            if (empty($lvlName)) {
+                $lvlRow = DB::table('edu_levels')->where('id', $c->level_id)->first();
+                if ($lvlRow) {
+                    $lvlName = $lvlRow->name;
+                    $c->lvl_code = $lvlRow->code ?? '';
+                    $c->lvl_name_en = $lvlRow->name_en ?? null;
+                    $c->lvl_kind = $lvlRow->kind ?? 'grade';
+                } else {
+                    $lvlName = "{$c->level_id}ኛ ክፍል";
+                }
+            }
+            $gradeStr = $lvlName;
             $levelObj = [
                 'id' => (int) $c->level_id,
                 'code' => $c->lvl_code ?? '',
-                'name' => $c->lvl_name ?? '',
+                'name' => $lvlName,
                 'name_en' => $c->lvl_name_en ?? null,
                 'kind' => $c->lvl_kind ?? 'grade',
             ];
         }
 
+        $cName = trim((string) ($c->name ?? ''));
+        if ($cName === '' || str_starts_with($cName, '{')) {
+            $cName = $gradeStr ?: ('ክፍል ' . $c->id);
+        }
+
+        $academicYearName = $academicYear ? $academicYear['name'] : (is_string($c->academic_year ?? null) ? $c->academic_year : null);
+
         $out = [
-            'id' => (int) $c->id, 'name' => $c->name, 'name_en' => $c->name_en ?? null,
-            'description' => $c->description, 'description_en' => $c->description_en ?? null,
-            'term' => $c->term,
-            'academic_year' => $academicYear ?: ($c->academic_year ?? null),
+            'id' => (int) $c->id,
+            'name' => $cName,
+            'name_en' => $c->name_en ?? null,
+            'description' => $c->description,
+            'description_en' => $c->description_en ?? null,
+            'term' => $termStr,
+            'academic_year' => $academicYearName,
+            'academic_year_obj' => $academicYear,
             'academic_year_id' => $c->academic_year_id ? (int) $c->academic_year_id : null,
             'term_id' => $c->term_id ? (int) $c->term_id : null,
             'term_obj' => $termObj,
             'level_id' => $c->level_id ? (int) $c->level_id : null,
             'level' => $levelObj,
+            'grade' => $gradeStr,
             'allow_multiple' => (bool) ($c->allow_multiple ?? 0),
             'allow_self_registration' => (bool) ($c->allow_self_registration ?? false),
-            'semester' => $c->semester ?? null, 'department_id' => $c->department_id ? (int) $c->department_id : null,
+            'semester' => $c->semester ?? null,
+            'department_id' => $c->department_id ? (int) $c->department_id : null,
             'streams' => ! empty($c->streams) ? array_values(array_filter(array_map('trim', explode(',', $c->streams)))) : [],
-            'registration_opens_at' => $c->registration_opens_at, 'registration_closes_at' => $c->registration_closes_at,
+            'registration_opens_at' => $c->registration_opens_at,
+            'registration_closes_at' => $c->registration_closes_at,
             'registration' => self::registrationState($c),
-            'allow_regular' => (bool) $c->allow_regular, 'allow_distance' => (bool) $c->allow_distance,
-            'capacity' => $c->capacity !== null ? (int) $c->capacity : null, 'status' => $c->status,
+            'allow_regular' => (bool) $c->allow_regular,
+            'allow_distance' => (bool) $c->allow_distance,
+            'capacity' => $c->capacity !== null ? (int) $c->capacity : null,
+            'status' => $c->status,
         ];
         if (property_exists($c, 'student_count')) $out['student_count'] = (int) $c->student_count;
         $out['my_program'] = $c->my_program ?? null;
@@ -352,19 +434,399 @@ final class Edu
 
     public static function createClass(array $actx, array $input): array
     {
+        $levelId = isset($input['level_id']) ? (int) $input['level_id'] : null;
+        $yearId = isset($input['academic_year_id']) ? (int) $input['academic_year_id'] : null;
+        $streamVal = isset($input['streams']) ? (is_array($input['streams']) ? implode(',', array_filter(array_map('trim', $input['streams']))) : (string) $input['streams']) : null;
+
+        // Prevent duplicate grade-class records for the same academic year and stream/section
+        if ($levelId && $yearId) {
+            $dupeQ = DB::table('edu_classes')
+                ->where('academic_year_id', $yearId)
+                ->where('level_id', $levelId)
+                ->where('status', '!=', 'archived');
+            if ($streamVal !== null && $streamVal !== '') {
+                $dupeQ->where('streams', $streamVal);
+            } else {
+                $dupeQ->where(fn ($w) => $w->whereNull('streams')->orWhere('streams', ''));
+            }
+            if ($dupeQ->exists()) {
+                throw ApiError::conflict('DUPLICATE_GRADE_CLASS', 'An active class already exists for this grade level and academic year.');
+            }
+        }
+
         $id = DB::table('edu_classes')->insertGetId(self::pick(self::CLASS_FIELDS, self::streamsCsv($input)) + ['created_by' => $actx['auth']->id]);
+
+        // Automatically connect official curriculum for this grade
+        if ($levelId) {
+            self::connectClassToCurriculum($id, $levelId);
+        }
+
         Audit::log($actx, Audit::EDU_UPDATE, 'edu_class', $id, ['created' => $input['name']]);
         return self::classDetail($actx['auth'], $id);
     }
 
     public static function updateClass(array $actx, int $id, array $input): array
     {
-        self::getClass($id);
+        $before = self::getClass($id);
+        $levelId = isset($input['level_id']) ? (int) $input['level_id'] : (int) ($before->level_id ?? 0);
+        $yearId = isset($input['academic_year_id']) ? (int) $input['academic_year_id'] : (int) ($before->academic_year_id ?? 0);
+        $streamVal = array_key_exists('streams', $input)
+            ? (is_array($input['streams']) ? implode(',', array_filter(array_map('trim', $input['streams']))) : (string) $input['streams'])
+            : ($before->streams ?? null);
+
+        // Prevent duplicate grade-class conflicts on update
+        if ($levelId && $yearId) {
+            $dupeQ = DB::table('edu_classes')
+                ->where('academic_year_id', $yearId)
+                ->where('level_id', $levelId)
+                ->where('id', '!=', $id)
+                ->where('status', '!=', 'archived');
+            if ($streamVal !== null && $streamVal !== '') {
+                $dupeQ->where('streams', $streamVal);
+            } else {
+                $dupeQ->where(fn ($w) => $w->whereNull('streams')->orWhere('streams', ''));
+            }
+            if ($dupeQ->exists()) {
+                throw ApiError::conflict('DUPLICATE_GRADE_CLASS', 'Another active class already exists for this grade level and academic year.');
+            }
+        }
+
         $patch = self::pick(self::CLASS_FIELDS, self::streamsCsv($input));
         if ($patch) DB::table('edu_classes')->where('id', $id)->update($patch);
+
+        if ($levelId) {
+            self::connectClassToCurriculum($id, $levelId);
+        }
+
         Audit::log($actx, Audit::EDU_UPDATE, 'edu_class', $id, ['fields' => array_keys($patch)]);
         return self::classDetail($actx['auth'], $id);
     }
+
+    public static function standardizeCourseCode(int $grade, int $sequence): string
+    {
+        $g = max(1, min(12, $grade));
+        $s = max(1, min(99, $sequence));
+        return sprintf('G%02d-S%02d', $g, $s);
+    }
+
+    /**
+     * Resolve canonical grade number (1–12) for a class.
+     */
+    public static function resolveClassGrade(object|array $class): ?int
+    {
+        $c = (object) $class;
+        if (! empty($c->level_id)) {
+            $lvl = DB::table('edu_levels')->where('id', $c->level_id)->first();
+            if ($lvl) {
+                if (isset($lvl->sort_order) && (int) $lvl->sort_order >= 1 && (int) $lvl->sort_order <= 12) {
+                    return (int) $lvl->sort_order;
+                }
+                if (! empty($lvl->code) && preg_match('/^G(\d{1,2})$/i', $lvl->code, $m)) {
+                    return (int) $m[1];
+                }
+            }
+            if ((int) $c->level_id >= 1 && (int) $c->level_id <= 12) {
+                return (int) $c->level_id;
+            }
+        }
+        if (! empty($c->name)) {
+            if (preg_match('/(\d{1,2})ኛ(?:\s*ክፍል)?/u', $c->name, $m)) {
+                return (int) $m[1];
+            }
+            if (preg_match('/(?:Grade|G|ክፍል)\s*(\d{1,2})/iu', $c->name, $m)) {
+                return (int) $m[1];
+            }
+        }
+        if (! empty($c->name_en) && preg_match('/(?:Grade|G)\s*(\d{1,2})/iu', $c->name_en, $m)) {
+            return (int) $m[1];
+        }
+        return null;
+    }
+
+    /**
+     * Connects a class to its official grade curriculum courses and lessons.
+     * Reuses existing courses without generating duplicates, mapping legacy course titles.
+     */
+    public static function connectClassToCurriculum(int $classId, ?int $levelId = null): array
+    {
+        $c = self::getClass($classId);
+        if ($levelId) {
+            $c->level_id = $levelId;
+        }
+        $gradeNum = self::resolveClassGrade($c);
+        if (! $gradeNum || $gradeNum < 1 || $gradeNum > 12) {
+            return ['connected' => 0, 'courses' => [], 'grade' => null];
+        }
+
+        if (! Schema::hasTable('edu_subjects')) {
+            return ['connected' => 0, 'courses' => [], 'grade' => $gradeNum];
+        }
+        $hasGradeCol = Schema::hasColumn('edu_subjects', 'grade');
+        $subjects = DB::table('edu_subjects')
+            ->when($hasGradeCol, function ($q) use ($gradeNum) {
+                $q->where('grade', $gradeNum)
+                  ->orWhere(fn ($q2) => $q2->whereNull('grade')->where('sort_order', $gradeNum));
+            }, function ($q) use ($gradeNum) {
+                $q->where('sort_order', $gradeNum);
+            })
+            ->where('status', '!=', 'archived')
+            ->orderBy('id')
+            ->get();
+
+        if ($subjects->isEmpty()) {
+            try {
+                EduCurriculumImport::import(false);
+                $subjects = DB::table('edu_subjects')
+                    ->when($hasGradeCol, function ($q) use ($gradeNum) {
+                        $q->where('grade', $gradeNum)
+                          ->orWhere(fn ($q2) => $q2->whereNull('grade')->where('sort_order', $gradeNum));
+                    }, function ($q) use ($gradeNum) {
+                        $q->where('sort_order', $gradeNum);
+                    })
+                    ->where('status', '!=', 'archived')
+                    ->orderBy('id')
+                    ->get();
+            } catch (\Throwable $e) {}
+        }
+
+        $connectedCount = 0;
+        $existingCourses = DB::table('edu_courses')->where('class_id', $classId)->get();
+
+        foreach ($subjects as $sub) {
+            $course = $existingCourses->firstWhere('subject_id', $sub->id);
+
+            if (! $course) {
+                $trimmedSubName = trim($sub->name);
+                $course = $existingCourses->first(function ($ec) use ($trimmedSubName, $sub) {
+                    return trim($ec->name ?? '') === $trimmedSubName
+                        || (! empty($sub->code) && trim($ec->code ?? '') === trim($sub->code))
+                        || (str_contains(trim($ec->name ?? ''), $trimmedSubName) || str_contains($trimmedSubName, trim($ec->name ?? '')));
+                });
+
+                if ($course) {
+                    DB::table('edu_courses')->where('id', $course->id)->update([
+                        'subject_id' => $sub->id,
+                        'code' => $sub->code ?? $course->code,
+                        'status' => 'active',
+                        'updated_at' => now(),
+                    ]);
+                    $connectedCount++;
+                    continue;
+                }
+            }
+
+            if (! $course) {
+                DB::table('edu_courses')->insert([
+                    'class_id' => $classId,
+                    'subject_id' => $sub->id,
+                    'name' => $sub->name,
+                    'code' => (!empty($sub->code) && preg_match('/^G\d{1,2}-S\d{1,2}$/i', $sub->code))
+                        ? strtoupper(trim($sub->code))
+                        : self::standardizeCourseCode($gradeNum, $sub->sort_order ?: $sub->id),
+                    'status' => 'active',
+                    'mode' => 'physical',
+                    'pass_mark' => 50.0,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+                $connectedCount++;
+            } else {
+                $connectedCount++;
+            }
+        }
+
+        return [
+            'connected' => $connectedCount,
+            'grade' => $gradeNum,
+            'total_subjects' => $subjects->count(),
+        ];
+    }
+
+    /**
+     * Preview official curriculum for a grade level prior to class creation/edit.
+     */
+    public static function curriculumPreview(int $levelId): array
+    {
+        $level = DB::table('edu_levels')->where('id', $levelId)->first();
+        if (! $level) throw ApiError::notFound('LEVEL_NOT_FOUND', 'Grade level not found');
+
+        $gradeNum = (int) ($level->sort_order ?? 0);
+        if ($gradeNum < 1 || $gradeNum > 12) {
+            if (preg_match('/^G(\d{1,2})$/i', $level->code ?? '', $m)) {
+                $gradeNum = (int) $m[1];
+            }
+        }
+
+        $hasGradeCol = Schema::hasColumn('edu_subjects', 'grade');
+        $subjects = DB::table('edu_subjects as s')
+            ->leftJoin('edu_categories as c', 'c.id', '=', 's.category_id')
+            ->when($hasGradeCol, function ($q) use ($gradeNum) {
+                $q->where('s.grade', $gradeNum)
+                  ->orWhere(fn ($q2) => $q2->whereNull('s.grade')->where('s.sort_order', $gradeNum));
+            }, function ($q) use ($gradeNum) {
+                $q->where('s.sort_order', $gradeNum);
+            })
+            ->where('s.status', '!=', 'archived')
+            ->select('s.*', 'c.name as category_name', 'c.name_en as category_name_en', 'c.icon_key as category_icon')
+            ->orderBy('s.id')
+            ->get();
+
+        $subjectIds = $subjects->pluck('id')->all();
+        $unitCounts = ! empty($subjectIds)
+            ? DB::table('edu_units')->whereIn('subject_id', $subjectIds)->groupBy('subject_id')->select('subject_id', DB::raw('COUNT(*) as total'))->pluck('total', 'subject_id')->all()
+            : [];
+        $lessonCounts = ! empty($subjectIds)
+            ? DB::table('edu_lessons')->whereIn('subject_id', $subjectIds)->groupBy('subject_id')->select('subject_id', DB::raw('COUNT(*) as total'))->pluck('total', 'subject_id')->all()
+            : [];
+        $publishedLessonCounts = ! empty($subjectIds)
+            ? DB::table('edu_lessons')->whereIn('subject_id', $subjectIds)->where('status', 'published')->groupBy('subject_id')->select('subject_id', DB::raw('COUNT(*) as total'))->pluck('total', 'subject_id')->all()
+            : [];
+
+        $previewList = $subjects->map(fn ($s) => [
+            'id' => (int) $s->id,
+            'name' => $s->name,
+            'name_en' => $s->name_en,
+            'code' => $s->code,
+            'category_name' => $s->category_name,
+            'category_name_en' => $s->category_name_en,
+            'category_icon' => $s->category_icon,
+            'units_count' => (int) ($unitCounts[$s->id] ?? 0),
+            'lessons_count' => (int) ($lessonCounts[$s->id] ?? 0),
+            'published_lessons_count' => (int) ($publishedLessonCounts[$s->id] ?? 0),
+            'status' => $s->status,
+        ])->all();
+
+        return [
+            'level_id' => (int) $level->id,
+            'grade' => $gradeNum,
+            'grade_name' => $level->name,
+            'grade_name_en' => $level->name_en,
+            'has_curriculum' => ! empty($previewList),
+            'total_subjects' => count($previewList),
+            'subjects' => $previewList,
+        ];
+    }
+
+    /**
+     * Explicitly synchronize / refresh a class's curriculum connections.
+     */
+    public static function syncClassCurriculum(array $actx, int $classId): array
+    {
+        $res = self::connectClassToCurriculum($classId);
+        Audit::log($actx, Audit::EDU_UPDATE, 'edu_class', $classId, ['sync_curriculum' => $res]);
+        $detail = self::classDetail($actx['auth'], $classId);
+        $detail['sync_stats'] = [
+            'connected' => $res['connected'] ?? 0,
+            'total_subjects' => $res['total_subjects'] ?? 0,
+            'grade' => $res['grade'] ?? null,
+            'success' => true,
+        ];
+        return $detail;
+    }
+
+    /**
+     * Synchronize official canonical curriculum across all 12 grades from intermediate canonical JSON.
+     */
+    public static function syncCurriculum(array $actx, bool $dryRun = false): array
+    {
+        $res = EduCurriculumImport::import($dryRun);
+        Audit::log($actx, Audit::EDU_UPDATE, 'edu_curriculum', 0, ['sync_curriculum' => $res]);
+        return $res;
+    }
+
+    /**
+     * Ensure Grade 1–12 classes exist and are connected to official curriculum.
+     */
+    public static function ensureGradeClasses(?int $academicYearId = null): array
+    {
+        EduAcademicYears::ensureCanonicalGrades();
+
+        $yearId = $academicYearId;
+        if (! $yearId) {
+            $year = DB::table('edu_academic_years')->where('is_current', 1)->first()
+                 ?? DB::table('edu_academic_years')->orderByDesc('eth_year')->first();
+            if (! $year) {
+                $nowEth = 2017;
+                $yearId = DB::table('edu_academic_years')->insertGetId([
+                    'eth_year' => $nowEth,
+                    'name' => "{$nowEth} ዓ.ም",
+                    'status' => 'active',
+                    'is_current' => 1,
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            } else {
+                $yearId = (int) $year->id;
+            }
+        }
+
+        $levels = DB::table('edu_levels')->where('kind', 'grade')->orderBy('sort_order')->get()->keyBy('sort_order');
+        $results = [];
+
+        for ($g = 1; $g <= 12; $g++) {
+            $level = $levels->get($g);
+            $levelId = $level ? (int) $level->id : $g;
+
+            $existingClass = DB::table('edu_classes')
+                ->where('academic_year_id', $yearId)
+                ->where('level_id', $levelId)
+                ->where('status', '!=', 'archived')
+                ->first();
+
+            if (! $existingClass) {
+                $existingClass = DB::table('edu_classes')
+                    ->where('academic_year_id', $yearId)
+                    ->where('status', '!=', 'archived')
+                    ->where(function ($w) use ($g) {
+                        $w->where('name', "{$g}ኛ ክፍል")
+                          ->orWhere('name', "{$g}ኛ");
+                    })
+                    ->first();
+
+                if ($existingClass) {
+                    DB::table('edu_classes')->where('id', $existingClass->id)->update([
+                        'level_id' => $levelId,
+                        'name_en' => $existingClass->name_en ?? "Grade {$g}",
+                        'updated_at' => now(),
+                    ]);
+                }
+            }
+
+            $classId = null;
+            if ($existingClass) {
+                $classId = (int) $existingClass->id;
+            } else {
+                $classId = DB::table('edu_classes')->insertGetId([
+                    'name' => "{$g}ኛ ክፍል",
+                    'name_en' => "Grade {$g}",
+                    'academic_year_id' => $yearId,
+                    'level_id' => $levelId,
+                    'allow_regular' => 1,
+                    'allow_distance' => 1,
+                    'allow_self_registration' => 0,
+                    'status' => 'active',
+                    'created_at' => now(),
+                    'updated_at' => now(),
+                ]);
+            }
+
+            $conn = self::connectClassToCurriculum($classId, $levelId);
+            $results[] = [
+                'grade' => $g,
+                'class_id' => $classId,
+                'level_id' => $levelId,
+                'connected_courses' => $conn['connected'],
+                'action' => $existingClass ? 'reused' : 'created',
+            ];
+        }
+
+        return [
+            'academic_year_id' => $yearId,
+            'grades' => $results,
+            'total_grades' => count($results),
+        ];
+    }
+
 
     /**
      * Deleting cascades (enrollments, attendance, marks, submissions…), so a class / subject /
@@ -440,10 +902,53 @@ final class Edu
 
     public static function createCourse(array $actx, int $classId, array $input): array
     {
-        self::getClass($classId);
+        $class = self::getClass($classId);
         self::assertUser($input['teacher_user_id'] ?? null);
         self::assertSubject($input['subject_id'] ?? null);
         self::assertMemberGroups($input['member_groups'] ?? null);
+
+        // Auto-resolve curriculum subject if not explicitly supplied
+        if (empty($input['subject_id'])) {
+            $gradeNum = self::resolveClassGrade($class);
+            $cName = trim($input['name'] ?? '');
+            if ($gradeNum && Schema::hasTable('edu_subjects')) {
+                $sub = DB::table('edu_subjects')
+                    ->where(function ($q) use ($gradeNum) {
+                        $q->where('grade', $gradeNum)
+                          ->orWhere(fn ($q2) => $q2->whereNull('grade')->where('sort_order', $gradeNum));
+                    })
+                    ->where(function ($w) use ($cName, $input) {
+                        $w->where('name', $cName)
+                          ->orWhere('name_en', $cName);
+                        if (! empty($input['code'])) {
+                            $w->orWhere('code', trim($input['code']));
+                        }
+                    })
+                    ->first();
+                if ($sub) {
+                    $input['subject_id'] = $sub->id;
+                }
+            }
+        }
+
+        // Check if course offering already exists for this class and subject to prevent duplicates
+        if (! empty($input['subject_id'])) {
+            $existing = DB::table('edu_courses')->where('class_id', $classId)->where('subject_id', $input['subject_id'])->first();
+            if ($existing) {
+                // If existing course already offers this curriculum subject, update and return it
+                return self::updateCourse($actx, $existing->id, $input);
+            }
+        }
+
+        $gradeNum = self::resolveClassGrade(self::getClass($classId)) ?? 1;
+        $existingCount = DB::table('edu_courses')->where('class_id', $classId)->count();
+        if (empty($input['code']) || !preg_match('/^G\d{1,2}-S\d{1,2}$/i', $input['code'])) {
+            $input['code'] = self::standardizeCourseCode($gradeNum, $existingCount + 1);
+        } else {
+            preg_match('/^G(\d{1,2})-S(\d{1,2})$/i', $input['code'], $cm);
+            $input['code'] = self::standardizeCourseCode((int)$cm[1], (int)$cm[2]);
+        }
+
         $id = DB::table('edu_courses')->insertGetId(['class_id' => $classId] + self::pick(self::COURSE_FIELDS, $input));
         EduTeachers::syncMain($actx, $id, isset($input['teacher_user_id']) ? (int) $input['teacher_user_id'] : null, null);
         if (array_key_exists('program_ids', $input)) {
@@ -460,6 +965,11 @@ final class Edu
         self::assertUser($input['teacher_user_id'] ?? null);
         self::assertSubject($input['subject_id'] ?? null);
         self::assertMemberGroups($input['member_groups'] ?? null);
+        if (isset($input['code'])) {
+            if (preg_match('/^G(\d{1,2})-S(\d{1,2})$/i', $input['code'], $cm)) {
+                $input['code'] = self::standardizeCourseCode((int)$cm[1], (int)$cm[2]);
+            }
+        }
         $patch = self::pick([...self::COURSE_FIELDS, 'progress', 'completed_at'], $input);
         // Reaching 100 % completes the course today (unless a date is given); going below reopens it.
         if (isset($patch['progress'])) {
@@ -714,19 +1224,63 @@ final class Edu
 
     public static function overview(AuthContext $auth): array
     {
-        $enrolled = DB::table('edu_enrollments as e')->join('edu_classes as c', 'c.id', '=', 'e.class_id')->where(['e.user_id' => $auth->id, 'e.status' => 'active'])
-            ->select('c.*', 'e.program as my_program', self::classCounts())->orderBy('c.name')->get();
+        $hasAy = Schema::hasTable('edu_academic_years');
+        $hasTm = Schema::hasTable('edu_terms');
+        $hasLvl = Schema::hasTable('edu_levels');
+        $hasLvlCode = $hasLvl && Schema::hasColumn('edu_levels', 'code');
+        $hasLvlName = $hasLvl && Schema::hasColumn('edu_levels', 'name');
+        $hasLvlNameEn = $hasLvl && Schema::hasColumn('edu_levels', 'name_en');
+        $hasLvlKind = $hasLvl && Schema::hasColumn('edu_levels', 'kind');
+        $hasProgram = Schema::hasColumn('edu_enrollments', 'program');
+
+        $baseJoin = function ($query) use ($hasAy, $hasTm, $hasLvl) {
+            if ($hasAy) {
+                $query->leftJoin('edu_academic_years as y', 'y.id', '=', 'c.academic_year_id');
+            }
+            if ($hasTm) {
+                $query->leftJoin('edu_terms as tm', 'tm.id', '=', 'c.term_id');
+            }
+            if ($hasLvl) {
+                $query->leftJoin('edu_levels as lvl', 'lvl.id', '=', 'c.level_id');
+            }
+        };
+
+        $baseSelect = [
+            'c.*',
+            $hasAy ? 'y.eth_year as ay_eth_year' : DB::raw('NULL as ay_eth_year'),
+            $hasAy ? 'y.name as ay_name' : DB::raw('NULL as ay_name'),
+            $hasAy ? 'y.is_current as ay_is_current' : DB::raw('NULL as ay_is_current'),
+            $hasTm ? 'tm.name as tm_name' : DB::raw('NULL as tm_name'),
+            $hasLvlCode ? 'lvl.code as lvl_code' : DB::raw('NULL as lvl_code'),
+            $hasLvlName ? 'lvl.name as lvl_name' : DB::raw('NULL as lvl_name'),
+            $hasLvlNameEn ? 'lvl.name_en as lvl_name_en' : DB::raw('NULL as lvl_name_en'),
+            $hasLvlKind ? 'lvl.kind as lvl_kind' : DB::raw('NULL as lvl_kind'),
+            self::classCounts(),
+        ];
+
+        $enrolledQ = DB::table('edu_enrollments as e')->join('edu_classes as c', 'c.id', '=', 'e.class_id');
+        $baseJoin($enrolledQ);
+        $enrolled = $enrolledQ->where(['e.user_id' => $auth->id, 'e.status' => 'active', 'c.status' => 'active'])
+            ->select(array_merge($baseSelect, [$hasProgram ? 'e.program as my_program' : DB::raw('NULL as my_program')]))->orderBy('c.name')->get();
+
         // Classes where the student only takes subjects added from elsewhere.
-        $addedOnly = DB::table('edu_classes as c')->where('c.status', 'active')->whereNotIn('c.id', $enrolled->pluck('id')->all() ?: [0])
+        $addedOnlyQ = DB::table('edu_classes as c');
+        $baseJoin($addedOnlyQ);
+        $addedOnly = $addedOnlyQ->where('c.status', 'active')->whereNotIn('c.id', $enrolled->pluck('id')->all() ?: [0])
             ->whereExists(fn ($q) => $q->select(DB::raw(1))->from('edu_course_enrollments as ce')->join('edu_courses as co', 'co.id', '=', 'ce.course_id')
                 ->whereColumn('co.class_id', 'c.id')->where(['ce.user_id' => $auth->id, 'ce.status' => 'added']))
-            ->select('c.*', self::classCounts())->get();
+            ->select($baseSelect)->get();
+
         // Subjects with an ACTIVE teaching assignment (suspended / removed ones are not listed).
         $teaching = DB::table('edu_courses as co')->join('edu_classes as c', 'c.id', '=', 'co.class_id')->where('c.status', 'active')
             ->whereExists(fn ($q) => $q->select(DB::raw(1))->from('edu_course_teachers as ct')->whereColumn('ct.course_id', 'co.id')->where(['ct.user_id' => $auth->id, 'ct.status' => 'active']))
             ->select('co.*', 'c.name as class_name', DB::raw("(SELECT COUNT(*) FROM edu_enrollments e WHERE e.class_id = co.class_id AND e.status = 'active') as student_count"))->get();
-        $attendanceClasses = DB::table('edu_class_staff as s')->join('edu_classes as c', 'c.id', '=', 's.class_id')->where('s.user_id', $auth->id)->where('c.status', 'active')
-            ->select('c.*', self::classCounts())->get();
+
+        $attendanceClassesQ = DB::table('edu_class_staff as s')->join('edu_classes as c', 'c.id', '=', 's.class_id');
+        $baseJoin($attendanceClassesQ);
+        $attendanceClasses = $attendanceClassesQ->where('s.user_id', $auth->id)->where('c.status', 'active')
+            ->select($baseSelect)->get();
+
         $classIds = array_values(array_unique(array_merge($enrolled->pluck('id')->all(), $teaching->pluck('class_id')->all())));
         $open = array_filter(self::openClasses($auth), fn ($c) => ! $c['my_program'] && $c['registration'] === 'open');
         return [
@@ -770,13 +1324,107 @@ final class Edu
                      'tm.name as tm_name', 'lvl.code as lvl_code', 'lvl.name as lvl_name', 'lvl.name_en as lvl_name_en', 'lvl.kind as lvl_kind',
                      self::classCounts())
             ->first();
+        if (! $c) throw ApiError::notFound('CLASS_NOT_FOUND', 'Class not found');
+
         $out = self::serializeClass($c);
+
+        // Auto-connect curriculum if class has a grade level but no courses yet
         $courses = DB::table('edu_courses as co')->leftJoin('users as tu', 'tu.id', '=', 'co.teacher_user_id')->where('co.class_id', $classId)
             ->select('co.*', 'tu.full_name as teacher_name')->orderBy('co.name')->get();
-        $out['courses'] = $courses->map(function ($x) use ($c) {
+        if ($courses->isEmpty() && (! empty($c->level_id) || self::resolveClassGrade($c))) {
+            self::connectClassToCurriculum($classId, $c->level_id ? (int) $c->level_id : null);
+            $courses = DB::table('edu_courses as co')->leftJoin('users as tu', 'tu.id', '=', 'co.teacher_user_id')->where('co.class_id', $classId)
+                ->select('co.*', 'tu.full_name as teacher_name')->orderBy('co.name')->get();
+        }
+
+        // Gather curriculum subjects, units, lessons metadata
+        $subjectIds = array_values(array_filter(array_map(fn ($co) => ! empty($co->subject_id) ? (int) $co->subject_id : null, $courses->all())));
+        $curriculumMap = [];
+        if (! empty($subjectIds)) {
+            $subs = DB::table('edu_subjects as s')
+                ->leftJoin('edu_categories as cat', 'cat.id', '=', 's.category_id')
+                ->whereIn('s.id', $subjectIds)
+                ->select('s.*', 'cat.name as category_name', 'cat.name_en as category_name_en', 'cat.icon_key as category_icon')
+                ->get()->keyBy('id');
+
+            $unitCounts = DB::table('edu_units')->whereIn('subject_id', $subjectIds)->groupBy('subject_id')
+                ->select('subject_id', DB::raw('COUNT(*) as total'))->pluck('total', 'subject_id')->all();
+            $lessonCounts = DB::table('edu_lessons')->whereIn('subject_id', $subjectIds)->groupBy('subject_id')
+                ->select('subject_id', DB::raw('COUNT(*) as total'))->pluck('total', 'subject_id')->all();
+            $pubLessonCounts = DB::table('edu_lessons')->whereIn('subject_id', $subjectIds)->where('status', 'published')->groupBy('subject_id')
+                ->select('subject_id', DB::raw('COUNT(*) as total'))->pluck('total', 'subject_id')->all();
+
+            foreach ($subs as $sId => $sub) {
+                $curriculumMap[$sId] = [
+                    'subject' => $sub,
+                    'units_count' => (int) ($unitCounts[$sId] ?? 0),
+                    'lessons_count' => (int) ($lessonCounts[$sId] ?? 0),
+                    'published_lessons_count' => (int) ($pubLessonCounts[$sId] ?? 0),
+                ];
+            }
+        }
+
+        // Active teachers per course
+        $courseIds = $courses->pluck('id')->map(fn ($x) => (int) $x)->all();
+        $teachersByCourse = [];
+        if (! empty($courseIds)) {
+            $hasIsPrimaryCol = Schema::hasColumn('edu_course_teachers', 'is_primary');
+            $tQuery = DB::table('edu_course_teachers as ct')
+                ->join('users as u', 'u.id', '=', 'ct.user_id')
+                ->whereIn('ct.course_id', $courseIds)
+                ->where('ct.status', 'active');
+            if ($hasIsPrimaryCol) {
+                $tQuery->select('ct.course_id', 'u.id', 'u.full_name', 'u.phone', 'ct.is_primary');
+            } else {
+                $tQuery->select('ct.course_id', 'u.id', 'u.full_name', 'u.phone');
+            }
+            $tRows = $tQuery->get();
+            $primaryTeacherByCourse = $courses->pluck('teacher_user_id', 'id')->all();
+            foreach ($tRows as $tr) {
+                $isPrimary = $hasIsPrimaryCol
+                    ? (bool) ($tr->is_primary ?? false)
+                    : ((int) $tr->id === (int) ($primaryTeacherByCourse[$tr->course_id] ?? 0));
+                $teachersByCourse[$tr->course_id][] = [
+                    'id' => (int) $tr->id,
+                    'full_name' => $tr->full_name,
+                    'phone' => $tr->phone,
+                    'is_primary' => $isPrimary,
+                ];
+            }
+        }
+
+        $out['courses'] = $courses->map(function ($x) use ($c, $curriculumMap, $teachersByCourse) {
             $x->class_name = $c->name;
-            return self::serializeCourse($x);
+            $ser = self::serializeCourse($x);
+            $sId = $x->subject_id ? (int) $x->subject_id : null;
+            $cMeta = $sId && isset($curriculumMap[$sId]) ? $curriculumMap[$sId] : null;
+            $ser['curriculum_subject'] = $cMeta ? [
+                'id' => $sId,
+                'name' => $cMeta['subject']->name,
+                'name_en' => $cMeta['subject']->name_en,
+                'code' => $cMeta['subject']->code,
+                'category_name' => $cMeta['subject']->category_name,
+                'category_name_en' => $cMeta['subject']->category_name_en,
+                'category_icon' => $cMeta['subject']->category_icon,
+                'units_count' => $cMeta['units_count'],
+                'lessons_count' => $cMeta['lessons_count'],
+                'published_lessons_count' => $cMeta['published_lessons_count'],
+                'status' => $cMeta['subject']->status,
+            ] : null;
+            $ser['teachers'] = $teachersByCourse[(int) $x->id] ?? [];
+            return $ser;
         })->all();
+
+        $gradeNum = self::resolveClassGrade($c);
+        $out['curriculum'] = [
+            'grade' => $gradeNum,
+            'grade_name' => $gradeNum ? "{$gradeNum}ኛ ክፍል" : ($c->name ?? null),
+            'grade_name_en' => $gradeNum ? "Grade {$gradeNum}" : ($c->name_en ?? null),
+            'is_connected' => ! empty($gradeNum),
+            'total_courses' => count($out['courses']),
+            'source' => 'Official Sunday School Curriculum',
+        ];
+
         $out['schedule'] = self::schedule($classId);
         $mine = self::enrollment($classId, $auth->id);
         $out['my_program'] = $mine?->program;
@@ -874,11 +1522,34 @@ final class Edu
     public static function roster(AuthContext $auth, int $classId, string $date): array
     {
         self::assertAttendance($auth, $classId);
-        return DB::table('edu_enrollments as e')->join('users as u', 'u.id', '=', 'e.user_id')
+        $rows = DB::table('edu_enrollments as e')->join('users as u', 'u.id', '=', 'e.user_id')
             ->leftJoin('edu_attendance as a', fn ($j) => $j->on('a.user_id', '=', 'e.user_id')->on('a.class_id', '=', 'e.class_id')->where('a.session_date', '=', $date))
             ->where(['e.class_id' => $classId, 'e.status' => 'active'])
             ->select('u.id as user_id', 'u.full_name', 'u.profile_image', 'e.program', 'a.status', 'a.via')->orderBy('u.full_name')
             ->get()->map(fn ($r) => self::strip($r))->all();
+
+        // Also bridge unified attendance marks from attendance + attendance_edu_classes
+        if (Schema::hasTable('attendance') && Schema::hasTable('attendance_edu_classes')) {
+            try {
+                $unifiedMarks = DB::table('attendance as att')
+                    ->join('attendance_edu_classes as aec', 'aec.attendance_id', '=', 'att.id')
+                    ->where('aec.class_id', $classId)
+                    ->where('att.occurrence_date', $date)
+                    ->pluck('att.status', 'att.user_id')
+                    ->all();
+
+                foreach ($rows as $r) {
+                    if (empty($r->status) && isset($unifiedMarks[$r->user_id])) {
+                        $r->status = $unifiedMarks[$r->user_id];
+                        $r->via = 'programs_unified';
+                    }
+                }
+            } catch (\Throwable) {
+                // Ignore fallback error on mock/partial tables
+            }
+        }
+
+        return $rows;
     }
 
     private static function markOne(AuthContext $auth, int $classId, string $date, int $userId, string $status, string $via): void
@@ -1265,7 +1936,7 @@ final class Edu
 
     public static function myAssignments(AuthContext $auth, int $classId): array
     {
-        if (! self::enrollment($classId, $auth->id) && ! self::hasAddedSubject($classId, $auth->id)) throw ApiError::forbidden('NOT_ENROLLED', 'You are not enrolled in this class');
+        self::assertClassMember($auth, $classId);
         // Only the subjects the student takes (a dropped subject's work is not listed, an added one's is).
         $mineIds = array_map(fn ($c) => (int) $c->id, array_values(array_filter(DB::table('edu_courses')->where('class_id', $classId)->get()->all(), fn ($c) => self::onRoster($c, $auth->id))));
         $rows = DB::table('edu_assignments as a')->join('edu_courses as co', 'co.id', '=', 'a.course_id')->where('co.class_id', $classId)->whereIn('co.id', $mineIds ?: [0])
@@ -1286,6 +1957,7 @@ final class Edu
     {
         $a = DB::table('edu_assignments as a')->join('edu_courses as co', 'co.id', '=', 'a.course_id')->where('a.id', $assignmentId)->first(['a.*', 'co.class_id']);
         if (! $a) throw ApiError::notFound('ASSIGNMENT_NOT_FOUND', 'Assignment not found');
+        self::assertClassMember($auth, (int) $a->class_id);
         if (! self::onRoster(self::getCourse((int) $a->course_id), $auth->id)) throw ApiError::forbidden('NOT_ENROLLED', 'You are not enrolled in this class');
         if (! $text && ! $file) throw ApiError::validation([['field' => 'text', 'code' => 'REQUIRED', 'message' => 'REQUIRED']]);
 
@@ -1382,8 +2054,8 @@ final class Edu
 
     public static function myResults(AuthContext $auth, int $classId): array
     {
+        self::assertClassMember($auth, $classId);
         $enrolled = (bool) self::enrollment($classId, $auth->id);
-        if (! $enrolled && ! self::hasAddedSubject($classId, $auth->id)) throw ApiError::forbidden('NOT_ENROLLED', 'You are not enrolled in this class');
         $out = [];
         // The class's subjects the student has not dropped (subjects added from elsewhere are listed in their own class).
         foreach (DB::table('edu_courses')->where('class_id', $classId)->orderBy('name')->get()->filter(fn ($c) => self::onRoster($c, $auth->id)) as $c) {

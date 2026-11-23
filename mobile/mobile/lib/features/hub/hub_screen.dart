@@ -2,7 +2,6 @@ import 'dart:async';
 import 'package:flutter/material.dart' hide Banner;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:image_picker/image_picker.dart';
 
 import '../../services/offline_pack.dart';
 import '../../core/providers.dart';
@@ -235,9 +234,6 @@ class MyPaymentsScreen extends ConsumerWidget {
     final l = context.l10n;
     final f = Formatters(l, Localizations.localeOf(context).languageCode);
     final myPayAsync = ref.watch(myPaymentsProvider);
-    final policy = myPayAsync.value != null ? asJson(myPayAsync.value!['policy']) : <String, dynamic>{};
-    final defaultRate = asDouble(policy['default_rate'] ?? 50);
-    final currency = asStr(policy['currency']) ?? 'ETB';
 
     return PatternScaffold(
       appBar: AppBar(
@@ -286,10 +282,79 @@ class MyPaymentsScreen extends ConsumerWidget {
                     Text(paymentYearSummary(l, asJson(d['year'])), style: context.sans(14, weight: FontWeight.w700)),
                     const SizedBox(height: 6),
                     LinearProgressIndicator(value: asIntOr(asJson(d['year'])['months_paid']) / 12, color: AppColors.gold, minHeight: 6, borderRadius: BorderRadius.circular(4)),
-                    if (paymentYearMonths(f, asJson(d['year'])).isNotEmpty) ...[
-                      const SizedBox(height: 6),
-                      Text(l.paymentsYearPaidList(paymentYearMonths(f, asJson(d['year']))), style: context.sans(12, color: context.palette.muted)),
-                    ],
+                    const SizedBox(height: 12),
+                    // Distinct visual sections for Paid and Unpaid Ethiopian Months
+                    Builder(builder: (ctx) {
+                      final yearMap = asJson(d['year']);
+                      final paidList = asValues(yearMap['paid_months'], (e) => asIntOr(e, 0)).toSet();
+                      final unpaidList = asValues(yearMap['unpaid_months'], (e) => asIntOr(e, 0)).toSet();
+                      final effectiveUnpaid = unpaidList.isNotEmpty ? unpaidList : {for (var i = 1; i <= 12; i++) if (!paidList.contains(i)) i};
+
+                      return Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(l.isEn ? 'Paid Ethiopian Months' : 'የተከፈሉ ወራት', style: context.sans(12.5, weight: FontWeight.w700, color: AppColors.success)),
+                          const SizedBox(height: 5),
+                          if (paidList.isEmpty)
+                            Text(l.isEn ? 'No months paid yet' : 'እስካሁን የተከፈለ ወር የለም', style: context.sans(12, color: context.palette.muted))
+                          else
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 4,
+                              children: [
+                                for (var m = 1; m <= 12; m++)
+                                  if (paidList.contains(m))
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.success.withValues(alpha: 0.12),
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(color: AppColors.success.withValues(alpha: 0.4)),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.check_circle_rounded, size: 13, color: AppColors.success),
+                                          const SizedBox(width: 4),
+                                          Text(f.monthName(m), style: context.sans(11.5, weight: FontWeight.w600, color: AppColors.success)),
+                                        ],
+                                      ),
+                                    ),
+                              ],
+                            ),
+                          const SizedBox(height: 10),
+                          Text(l.isEn ? 'Unpaid Ethiopian Months' : 'ያልተከፈሉ ወራት', style: context.sans(12.5, weight: FontWeight.w700, color: AppColors.maroon)),
+                          const SizedBox(height: 5),
+                          if (effectiveUnpaid.isEmpty)
+                            Text(l.isEn ? 'All months covered ✓' : 'ሁሉም ወራት ተከፍለዋል ✓', style: context.sans(12, color: AppColors.success, weight: FontWeight.w600))
+                          else
+                            Wrap(
+                              spacing: 6,
+                              runSpacing: 4,
+                              children: [
+                                for (var m = 1; m <= 12; m++)
+                                  if (effectiveUnpaid.contains(m))
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                                      decoration: BoxDecoration(
+                                        color: AppColors.maroon.withValues(alpha: 0.08),
+                                        borderRadius: BorderRadius.circular(6),
+                                        border: Border.all(color: AppColors.maroon.withValues(alpha: 0.3)),
+                                      ),
+                                      child: Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          const Icon(Icons.schedule_rounded, size: 13, color: AppColors.maroon),
+                                          const SizedBox(width: 4),
+                                          Text(f.monthName(m), style: context.sans(11.5, weight: FontWeight.w600, color: AppColors.maroon)),
+                                        ],
+                                      ),
+                                    ),
+                              ],
+                            ),
+                        ],
+                      );
+                    }),
                   ]),
                 ),
               ),
@@ -421,130 +486,7 @@ class MyPaymentsScreen extends ConsumerWidget {
   }
 }
 
-Future<void> _submitReceiptDialog(BuildContext context, WidgetRef ref, double rate, String currency) async {
-  final l = context.l10n;
-  final f = Formatters(l, Localizations.localeOf(context).languageCode);
-  int months = 1;
-  final refCtrl = TextEditingController();
-  final noteCtrl = TextEditingController();
-  XFile? pickedFile;
 
-  await showModalBottomSheet<void>(
-    context: context,
-    isScrollControlled: true,
-    builder: (ctx) => StatefulBuilder(
-      builder: (ctx, setModalState) {
-        final totalAmount = months * rate;
-        return Padding(
-          padding: EdgeInsets.only(
-            left: 20,
-            right: 20,
-            top: 20,
-            bottom: MediaQuery.of(ctx).viewInsets.bottom + 24,
-          ),
-          child: SingleChildScrollView(
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(l.isEn ? 'Submit Contribution Receipt' : 'የመዋጮ ደረሰኝ አስገባ', style: ctx.serif(18, weight: FontWeight.w700)),
-                const SizedBox(height: 14),
-                Row(
-                  children: [
-                    Text(l.isEn ? 'Covered Months:' : 'የሚከፈልባቸው ወራት:', style: ctx.sans(13, weight: FontWeight.w600)),
-                    const Spacer(),
-                    DropdownButton<int>(
-                      value: months,
-                      items: [
-                        for (int m = 1; m <= 12; m++)
-                          DropdownMenuItem(value: m, child: Text('$m ${l.isEn ? (m == 1 ? 'Month' : 'Months') : 'ወር'}')),
-                      ],
-                      onChanged: (v) {
-                        if (v != null) setModalState(() => months = v);
-                      },
-                    ),
-                  ],
-                ),
-                const SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.all(12),
-                  decoration: BoxDecoration(
-                    color: AppColors.maroon.withValues(alpha: 0.08),
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: AppColors.maroon.withValues(alpha: 0.2)),
-                  ),
-                  child: Row(
-                    children: [
-                      Text(l.isEn ? 'Calculated Total:' : 'አጠቃላይ ክፍያ:', style: ctx.sans(13, weight: FontWeight.w600)),
-                      const Spacer(),
-                      Text(
-                        f.money(totalAmount, currency),
-                        style: ctx.serif(18, color: AppColors.maroon, weight: FontWeight.w700),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-                TextField(
-                  controller: refCtrl,
-                  decoration: InputDecoration(
-                    labelText: l.paymentReference,
-                    hintText: 'e.g. TXN-12345678',
-                  ),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: noteCtrl,
-                  decoration: InputDecoration(
-                    labelText: l.isEn ? 'Note (Optional)' : 'ተጨማሪ ማስታወሻ (አማራጭ)',
-                  ),
-                ),
-                const SizedBox(height: 14),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    final picker = ImagePicker();
-                    final img = await picker.pickImage(source: ImageSource.gallery);
-                    if (img != null) {
-                      setModalState(() => pickedFile = img);
-                    }
-                  },
-                  icon: Icon(pickedFile != null ? Icons.check_circle_rounded : Icons.add_photo_alternate_outlined),
-                  label: Text(pickedFile != null ? pickedFile!.name : (l.isEn ? 'Select Receipt Image' : 'ደረሰኝ ምረጥ (ፎቶ / ምስል)')),
-                ),
-                const SizedBox(height: 18),
-                FilledButton(
-                  onPressed: pickedFile == null
-                      ? null
-                      : () async {
-                          Navigator.pop(ctx);
-                          final ok = await runWithProgress(
-                            context,
-                            () => ref.read(orgRepositoryProvider).submitReceipt(
-                                  filePath: pickedFile!.path,
-                                  months: months,
-                                  amount: totalAmount,
-                                  note: [
-                                    if (refCtrl.text.trim().isNotEmpty) 'Ref: ${refCtrl.text.trim()}',
-                                    if (noteCtrl.text.trim().isNotEmpty) noteCtrl.text.trim(),
-                                  ].join(' - '),
-                                ),
-                            success: l.isEn ? 'Receipt submitted for review!' : 'ደረሰኙ ለግምገማ በተሳካ ሁኔታ ቀርቧል!',
-                          );
-                          if (ok != null) {
-                            ref.invalidate(myPaymentsProvider);
-                            ref.invalidate(myReceiptsProvider);
-                          }
-                        },
-                  child: Text(l.isEn ? 'Submit for Review' : 'ለግምገማ አስገባ'),
-                ),
-              ],
-            ),
-          ),
-        );
-      },
-    ),
-  );
-}
 
 String paymentMethodLabel(AppLocalizations l, String? m) => switch (m) {
       'bank' => l.methodBank,

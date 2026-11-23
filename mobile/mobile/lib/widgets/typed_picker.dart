@@ -52,7 +52,7 @@ Future<PickedFile?> pickOfKind(String choice, {List<String> documents = document
   switch (choice) {
     case 'gallery':
     case 'camera':
-      final x = await picker.pickImage(source: choice == 'gallery' ? ImageSource.gallery : ImageSource.camera, maxWidth: 2400, maxHeight: 2400, imageQuality: 88);
+      final x = await picker.pickImage(source: choice == 'gallery' ? ImageSource.gallery : ImageSource.camera, maxWidth: 1600, maxHeight: 1600, imageQuality: 78);
       if (x == null) return null;
       if (kIsWeb) {
         final bytes = await x.readAsBytes();

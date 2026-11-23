@@ -1,11 +1,8 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:path_provider/path_provider.dart';
-import 'package:pdfrx/pdfrx.dart';
 
+import '../../../widgets/webp_pdf_viewer.dart';
 import '../../../core/providers.dart';
 import '../../../core/theme/app_colors.dart';
 import '../../../core/theme/app_theme.dart';
@@ -55,9 +52,70 @@ class SeledaMagazineBanner extends ConsumerWidget {
       loading: () => const SizedBox.shrink(),
       error: (_, _) => const SizedBox.shrink(),
       data: (m) {
-        if (m == null || m['issue_number'] == null) return const SizedBox.shrink();
-
         final isEn = Localizations.localeOf(context).languageCode != 'am';
+        if (m == null || m['issue_number'] == null) {
+          return Container(
+            margin: const EdgeInsets.only(top: 14, bottom: 6),
+            decoration: BoxDecoration(
+              gradient: const LinearGradient(
+                colors: [Color(0xFF4A101D), Color(0xFF28070E)],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: AppColors.gold.withValues(alpha: 0.5), width: 1.2),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.25),
+                  blurRadius: 10,
+                  offset: const Offset(0, 4),
+                ),
+              ],
+            ),
+            child: Material(
+              color: Colors.transparent,
+              child: InkWell(
+                borderRadius: BorderRadius.circular(16),
+                onTap: () => context.push('/edu/magazines'),
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Row(
+                    children: [
+                      Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: AppColors.gold.withValues(alpha: 0.15),
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(color: AppColors.gold.withValues(alpha: 0.3)),
+                        ),
+                        child: const Icon(Icons.menu_book_rounded, color: AppColors.goldLight, size: 26),
+                      ),
+                      const SizedBox(width: 14),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              isEn ? 'Seleda Magazine' : 'ሰሌዳ መጽሔት',
+                              style: context.serif(16, weight: FontWeight.w700, color: Colors.white),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              isEn ? 'Browse issues, articles & quizzes' : 'እትሞችን፣ ጽሑፎችንና ተዛማጅ ጥያቄዎችን ይመልከቱ',
+                              style: context.sans(12, color: Colors.white70),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const Icon(Icons.arrow_forward_ios_rounded, color: AppColors.goldLight, size: 16),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
         final title = isEn ? (asStr(m['title_en']) ?? asStr(m['title']) ?? '') : (asStr(m['title']) ?? asStr(m['title_en']) ?? '');
         final issueNumber = asStr(m['issue_number']) ?? '';
         final period = asStr(m['period_info']) ?? '';
@@ -125,6 +183,20 @@ class SeledaMagazineBanner extends ConsumerWidget {
                           style: context.sans(11.5, color: Colors.white70, weight: FontWeight.w600),
                         ),
                       ),
+                    const Spacer(),
+                    InkWell(
+                      onTap: () => context.push('/edu/magazines'),
+                      child: Row(
+                        children: [
+                          Text(
+                            !isEn ? 'ሁሉም እትሞች' : 'All Issues',
+                            style: context.sans(11.5, color: AppColors.goldLight, weight: FontWeight.w600),
+                          ),
+                          const SizedBox(width: 2),
+                          const Icon(Icons.chevron_right_rounded, color: AppColors.goldLight, size: 16),
+                        ],
+                      ),
+                    ),
                   ]),
                   const SizedBox(height: 12),
                   Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -182,6 +254,7 @@ class SeledaMagazineBanner extends ConsumerWidget {
                               builder: (_) => EduMagazinePdfReaderScreen(
                                 title: title,
                                 pdfUrl: _resolveMediaUrl(pdfUrl, baseUrl),
+                                magazineId: asInt(m['id']),
                               ),
                             ),
                           ),
@@ -281,6 +354,7 @@ class EduMagazinesListScreen extends ConsumerWidget {
               final issueNumber = asStr(m['issue_number']) ?? '';
               final period = asStr(m['period_info']) ?? '';
               final coverUrl = _resolveMediaUrl(asStr(m['cover_url']), baseUrl);
+              final pdfUrl = asStr(m['pdf_url']) ?? '';
 
               return AppCard(
                 padding: const EdgeInsets.all(12),
@@ -322,7 +396,22 @@ class EduMagazinesListScreen extends ConsumerWidget {
                           ),
                       ]),
                     ),
-                    const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: Colors.grey),
+                    if (pdfUrl.isNotEmpty)
+                      IconButton(
+                        tooltip: !isEn ? 'አንብብ' : 'Read Issue',
+                        icon: const Icon(Icons.auto_stories_rounded, color: AppColors.maroon, size: 22),
+                        onPressed: () => Navigator.of(context).push(
+                          MaterialPageRoute<void>(
+                            builder: (_) => EduMagazinePdfReaderScreen(
+                              title: title,
+                              pdfUrl: _resolveMediaUrl(pdfUrl, baseUrl),
+                              magazineId: asInt(m['id']),
+                            ),
+                          ),
+                        ),
+                      )
+                    else
+                      const Icon(Icons.arrow_forward_ios_rounded, size: 16, color: Colors.grey),
                   ]),
                 ),
               );
@@ -437,6 +526,7 @@ class EduMagazineDetailScreen extends ConsumerWidget {
                         builder: (_) => EduMagazinePdfReaderScreen(
                           title: title,
                           pdfUrl: _resolveMediaUrl(pdfUrl, baseUrl),
+                          magazineId: asInt(m['id']),
                         ),
                       ),
                     ),
@@ -556,83 +646,28 @@ class _MagazineQuizCard extends StatelessWidget {
 }
 
 // =============================================================================
-// Magazine PDF In-App Reader
+// Magazine PDF In-App Reader (WebP Multi-Page Rendering + Fallback)
 // =============================================================================
-class EduMagazinePdfReaderScreen extends ConsumerStatefulWidget {
-  const EduMagazinePdfReaderScreen({super.key, required this.title, required this.pdfUrl});
+class EduMagazinePdfReaderScreen extends ConsumerWidget {
+  const EduMagazinePdfReaderScreen({
+    super.key,
+    required this.title,
+    required this.pdfUrl,
+    this.magazineId,
+  });
+
   final String title;
   final String pdfUrl;
+  final int? magazineId;
 
   @override
-  ConsumerState<EduMagazinePdfReaderScreen> createState() => _EduMagazinePdfReaderScreenState();
-}
-
-class _EduMagazinePdfReaderScreenState extends ConsumerState<EduMagazinePdfReaderScreen> {
-  late Future<File> _fileFuture;
-  late final PdfViewerController _pdfController = PdfViewerController();
-
-  @override
-  void initState() {
-    super.initState();
-    _fileFuture = _downloadOrGetFile();
-  }
-
-  Future<File> _downloadOrGetFile() async {
-    final tempDir = await getTemporaryDirectory();
-    final filename = 'magazine_${widget.title.hashCode}_${widget.pdfUrl.split('/').last}';
-    final target = File('${tempDir.path}/$filename');
-    if (await target.exists() && await target.length() > 0) {
-      return target;
-    }
-
-    final api = ref.read(apiClientProvider);
-    await api.dio.download(
-      widget.pdfUrl,
-      target.path,
-    );
-    return target;
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(widget.title, maxLines: 1, overflow: TextOverflow.ellipsis),
-      ),
-      body: FutureBuilder<File>(
-        future: _fileFuture,
-        builder: (context, snap) {
-          if (snap.connectionState == ConnectionState.waiting) {
-            return const Center(
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                CircularProgressIndicator(color: AppColors.maroon),
-                SizedBox(height: 16),
-                Text('መጽሔቱን በማውረድ ላይ... / Loading magazine...'),
-              ]),
-            );
-          }
-          if (snap.hasError || !snap.hasData) {
-            return Center(
-              child: Column(mainAxisSize: MainAxisSize.min, children: [
-                const Icon(Icons.error_outline_rounded, color: AppColors.danger, size: 48),
-                const SizedBox(height: 12),
-                const Text('መጽሔቱን መክፈት አልተቻለም / Failed to load magazine'),
-                const SizedBox(height: 12),
-                FilledButton(
-                  onPressed: () => setState(() => _fileFuture = _downloadOrGetFile()),
-                  child: const Text('እንደገና ሞክር / Retry'),
-                ),
-              ]),
-            );
-          }
-
-          return PdfViewer.file(
-            snap.data!.path,
-            controller: _pdfController,
-            params: const PdfViewerParams(),
-          );
-        },
-      ),
+  Widget build(BuildContext context, WidgetRef ref) {
+    return WebpPdfViewer(
+      title: title,
+      documentType: 'magazine',
+      documentId: magazineId,
+      pdfUrl: pdfUrl,
     );
   }
 }
+

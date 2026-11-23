@@ -22,6 +22,7 @@ import '../features/edu/edu_scores_screen.dart';
 import '../features/edu/learn/content_admin.dart';
 import '../features/edu/learn/edu_home.dart';
 import '../features/edu/learn/learn_screens.dart';
+import '../features/edu/learn/magazine_admin.dart';
 import '../features/edu/learn/magazine_screens.dart';
 import '../features/edu/learn/materials_admin.dart';
 import '../features/edu/learn/progression_settings.dart';
@@ -29,6 +30,8 @@ import '../features/edu/learn/progress_more.dart';
 import '../features/edu/learn/quizzes_admin.dart';
 import '../features/edu/learn/quiz_screens.dart';
 import '../features/edu/admin/admin_grades_screen.dart';
+import '../features/edu/admin/edu_attendance_dashboard_screen.dart';
+import '../features/edu/admin/edu_book_catalog_screen.dart';
 import '../features/edu/announcements/announcements_screens.dart';
 import '../features/edu/assignments/assignments_screens.dart';
 import '../features/edu/learn/grade_content_screen.dart';
@@ -283,7 +286,7 @@ final routerProvider = Provider<GoRouter>((ref) {
               routes: [
                 // ትምህርት tabs: Home (/edu) · Learn · Classes · Progress · More.
                 GoRoute(path: 'learn', builder: (_, _) => const EduLearnScreen()),
-                GoRoute(path: 'learn/category/:id', builder: (_, s) => EduSubjectGradesScreen(subjectId: _id(s))),
+                GoRoute(path: 'learn/category/:id', builder: (_, s) => EduCategoryScreen(categoryId: _id(s))),
                 GoRoute(path: 'learn/subject/:id', builder: (_, s) => EduSubjectScreen(subjectId: _id(s))),
                 GoRoute(path: 'learn/lesson/:id', builder: (_, s) => EduLessonScreen(lessonId: _id(s))),
                 GoRoute(path: 'category/:id', redirect: (_, s) => '/edu/learn/category/${s.pathParameters['id']}'),
@@ -337,6 +340,7 @@ final routerProvider = Provider<GoRouter>((ref) {
                 ),
                 // ሰሌዳ መጽሔት (Seleda Magazine)
                 GoRoute(path: 'magazines', builder: (_, _) => const EduMagazinesListScreen()),
+                GoRoute(path: 'magazines/:id', redirect: (_, s) => '/edu/magazine/${s.pathParameters['id']}'),
                 GoRoute(
                   path: 'magazine/:id',
                   parentNavigatorKey: rootNavigatorKey,
@@ -567,6 +571,22 @@ final routerProvider = Provider<GoRouter>((ref) {
                   ),
                 ),
                 GoRoute(
+                  path: 'admin/attendance',
+                  parentNavigatorKey: rootNavigatorKey,
+                  builder: (_, _) => const ModuleBackgroundWrapper(
+                    kind: ModuleBackgroundKind.education,
+                    child: EduAttendanceDashboardScreen(),
+                  ),
+                ),
+                GoRoute(
+                  path: 'admin/catalog',
+                  parentNavigatorKey: rootNavigatorKey,
+                  builder: (_, _) => const ModuleBackgroundWrapper(
+                    kind: ModuleBackgroundKind.education,
+                    child: EduBookCatalogScreen(),
+                  ),
+                ),
+                GoRoute(
                   path: 'admin/quizzes',
                   parentNavigatorKey: rootNavigatorKey,
                   builder: (_, s) => ModuleBackgroundWrapper(
@@ -574,6 +594,14 @@ final routerProvider = Provider<GoRouter>((ref) {
                     child: EduQuizzesAdminScreen(
                       initialSubjectId: int.tryParse(s.uri.queryParameters['subject_id'] ?? ''),
                     ),
+                  ),
+                ),
+                GoRoute(
+                  path: 'admin/magazines',
+                  parentNavigatorKey: rootNavigatorKey,
+                  builder: (_, _) => const ModuleBackgroundWrapper(
+                    kind: ModuleBackgroundKind.education,
+                    child: EduMagazinesAdminScreen(),
                   ),
                 ),
                 GoRoute(
@@ -759,6 +787,7 @@ final routerProvider = Provider<GoRouter>((ref) {
         builder: (_, _) => const GuidanceCenterScreen(),
       ),
       // Direct navigation aliases for guidance targets and deep links
+      GoRoute(path: '/about', redirect: (_, _) => '/settings/about'),
       GoRoute(path: '/offline-status', redirect: (_, _) => '/hub'),
       GoRoute(path: '/library/books', redirect: (_, _) => '/edu/library'),
       GoRoute(path: '/edu/results', redirect: (_, _) => '/edu/progress'),
@@ -772,6 +801,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(path: '/admin/edu/programs', redirect: (_, _) => '/admin/programs'),
       GoRoute(path: '/admin/selections/intervals', redirect: (_, _) => '/admin/selections'),
       GoRoute(path: '/admin/edu/scores', redirect: (_, _) => '/edu/admin/scores'),
+      GoRoute(path: '/admin/edu/attendance', redirect: (_, _) => '/edu/admin/attendance'),
+      GoRoute(path: '/admin/edu/magazines', redirect: (_, _) => '/edu/admin/magazines'),
+      GoRoute(path: '/admin/catalog', redirect: (_, _) => '/edu/admin/catalog'),
+      GoRoute(path: '/admin/edu/catalog', redirect: (_, _) => '/edu/admin/catalog'),
+      GoRoute(path: '/edu/library', redirect: (_, _) => '/edu/admin/catalog'),
       ...adminRoutes(rootNavigatorKey),
       ...projectRoutes(rootNavigatorKey),
     ],

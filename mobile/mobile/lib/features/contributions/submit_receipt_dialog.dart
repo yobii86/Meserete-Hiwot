@@ -5,6 +5,7 @@ import '../../core/l10n/l10n.dart';
 import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/formatters.dart';
+import '../../core/utils/image_compressor.dart';
 import '../../models/json.dart';
 import '../../repositories/providers.dart';
 import '../../widgets/dialogs.dart';
@@ -39,18 +40,24 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
   DateTime _paidOn = DateTime.now();
   final _refCtrl = TextEditingController();
   final _noteCtrl = TextEditingController();
-  final _amountCtrl = TextEditingController();
 
   PickedFile? _receiptFile;
+  String? _fileSizeStr;
+  CompressionResult? _compressionResult;
+  bool _compressing = false;
+  String? _uploadError;
   Json? _calcResult;
   bool _calculating = false;
   bool _submitting = false;
+  double _uploadProgress = 0.0;
   String? _calcError;
 
   @override
   void initState() {
     super.initState();
-    _period = widget.defaultPeriod ?? ethPeriod(DateTime.now());
+    var p = widget.defaultPeriod ?? ethPeriod(DateTime.now());
+    if (p == '2019-01') p = '2019-02';
+    _period = p;
     _fetchCalculation();
   }
 
@@ -58,7 +65,6 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
   void dispose() {
     _refCtrl.dispose();
     _noteCtrl.dispose();
-    _amountCtrl.dispose();
     super.dispose();
   }
 
@@ -74,10 +80,6 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
       if (mounted) {
         setState(() {
           _calcResult = res;
-          final exp = asDouble(res['expected_amount'], 0);
-          if (_amountCtrl.text.isEmpty || _amountCtrl.text == '0') {
-            _amountCtrl.text = exp > 0 ? '$exp' : '';
-          }
         });
       }
     } catch (e) {
@@ -92,26 +94,68 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
   }
 
   Future<void> _pickReceipt() async {
-    final picked = await pickTypedFile(context, kinds: {PickKind.image, PickKind.document});
-    if (picked != null && mounted) {
-      setState(() => _receiptFile = picked);
+    final picked = await pickTypedFile(
+      context,
+      kinds: {PickKind.image, PickKind.document},
+      documents: const ['pdf', 'jpg', 'jpeg', 'png', 'webp'],
+    );
+    if (picked == null || !mounted) return;
+
+    setState(() {
+      _compressing = true;
+      _uploadError = null;
+    });
+
+    try {
+      final res = await ImageCompressor.compressReceipt(
+        path: picked.path,
+        name: picked.name,
+      );
+
+      if (mounted) {
+        if (ImageCompressor.isPdf(res.name) && res.compressedSizeBytes > 20 * 1024 * 1024) {
+          showInfo(
+            context,
+            context.l10n.isEn
+                ? 'PDF file is too large (maximum size is 20MB). Please select a smaller PDF.'
+                : 'የመረጡት ፒዲኤፍ ከ20MB በላይ ስለሆነ በጣም ትልቅ ነው። እባክዎ አነስ ያለ ፒዲኤፍ ይምረጡ።',
+          );
+          setState(() => _compressing = false);
+          return;
+        }
+
+        setState(() {
+          _receiptFile = (path: res.path, name: res.name);
+          _compressionResult = res;
+          _fileSizeStr = res.summaryText;
+          _compressing = false;
+        });
+      }
+    } catch (e) {
+      if (mounted) {
+        setState(() {
+          _receiptFile = picked;
+          _compressing = false;
+        });
+      }
     }
   }
 
   Future<void> _submit() async {
     final l = context.l10n;
+    if (_submitting) return;
     if (_receiptFile == null) {
       await showInfo(context, l.isEn ? 'Please attach a payment receipt file or image.' : 'እባክዎ የክፍያ ደረሰኝ ምስል ወይም ሰነድ ያያይዙ።');
       return;
     }
 
-    final enteredAmt = double.tryParse(_amountCtrl.text.trim()) ?? asDouble(_calcResult?['expected_amount'], 0);
-    if (enteredAmt <= 0) {
-      await showInfo(context, l.isEn ? 'Please enter a valid payment amount.' : 'እባክዎ ትክክለኛ የክፍያ መጠን ያስገቡ።');
-      return;
-    }
+    final expectedAmt = asDouble(_calcResult?['expected_amount'], 0);
 
-    setState(() => _submitting = true);
+    setState(() {
+      _submitting = true;
+      _uploadProgress = 0.0;
+      _uploadError = null;
+    });
 
     try {
       final repo = ref.read(orgRepositoryProvider);
@@ -119,11 +163,14 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
         filePath: _receiptFile!.path,
         period: _period,
         months: _months,
-        submittedAmount: enteredAmt,
+        submittedAmount: expectedAmt > 0 ? expectedAmt : null,
         method: _method,
         paidOn: Formatters.isoDate(_paidOn),
         reference: _refCtrl.text.trim(),
         note: _noteCtrl.text.trim(),
+        onProgress: (p) {
+          if (mounted) setState(() => _uploadProgress = p);
+        },
       );
 
       if (mounted) {
@@ -137,6 +184,9 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
       }
     } catch (e) {
       if (mounted) {
+        setState(() {
+          _uploadError = '$e';
+        });
         showErrorSnack(context, e);
       }
     } finally {
@@ -154,15 +204,21 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
     final currency = asStr(_calcResult?['currency']) ?? 'ETB';
     final coverageEnd = asStr(_calcResult?['coverage_end']) ?? _period;
 
-    // Generate recent and upcoming Ethiopian periods
+    // Generate recent and upcoming Ethiopian periods (excluding non-payable Meskerem 2019)
     final currentEth = EthiopianDate.fromGregorian(DateTime.now());
     final periods = <String>[];
     for (var y = currentEth.year - 1; y <= currentEth.year + 1; y++) {
       for (var m = 1; m <= 12; m++) {
-        periods.add('$y-${m.toString().padLeft(2, '0')}');
+        final per = '$y-${m.toString().padLeft(2, '0')}';
+        if (per != '2019-01') {
+          periods.add(per);
+        }
       }
     }
-    if (!periods.contains(_period)) periods.insert(0, _period);
+    if (_period == '2019-01') {
+      _period = periods.isNotEmpty ? periods.first : '2019-02';
+    }
+    if (!periods.contains(_period) && _period != '2019-01') periods.insert(0, _period);
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -296,39 +352,20 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
             ),
             const SizedBox(height: 14),
 
-            // Submitted Amount & Payment Method
-            Row(
-              children: [
-                Expanded(
-                  flex: 3,
-                  child: TextFormField(
-                    controller: _amountCtrl,
-                    keyboardType: const TextInputType.numberWithOptions(decimal: true),
-                    decoration: InputDecoration(
-                      labelText: l.isEn ? 'Paid Amount ($currency)' : 'የተከፈለው መጠን ($currency)',
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  flex: 2,
-                  child: DropdownButtonFormField<String>(
-                    initialValue: _method,
-                    decoration: InputDecoration(
-                      labelText: l.isEn ? 'Method' : 'የክፍያ ዘዴ',
-                      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
-                    ),
-                    items: [
-                      DropdownMenuItem(value: 'telebirr', child: Text(l.methodTelebirr)),
-                      DropdownMenuItem(value: 'bank', child: Text(l.methodBank)),
-                      DropdownMenuItem(value: 'cash', child: Text(l.methodCash)),
-                      DropdownMenuItem(value: 'other', child: Text(l.methodOther)),
-                    ],
-                    onChanged: (v) => setState(() => _method = v ?? 'telebirr'),
-                  ),
-                ),
+            // Payment Method
+            DropdownButtonFormField<String>(
+              initialValue: _method,
+              decoration: InputDecoration(
+                labelText: l.isEn ? 'Payment Method' : 'የክፍያ ዘዴ',
+                contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+              ),
+              items: [
+                DropdownMenuItem(value: 'telebirr', child: Text(l.methodTelebirr)),
+                DropdownMenuItem(value: 'bank', child: Text(l.methodBank)),
+                DropdownMenuItem(value: 'cash', child: Text(l.methodCash)),
+                DropdownMenuItem(value: 'other', child: Text(l.methodOther)),
               ],
+              onChanged: (v) => setState(() => _method = v ?? 'telebirr'),
             ),
             const SizedBox(height: 12),
 
@@ -389,7 +426,7 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
 
             // Receipt File Attachment Card
             InkWell(
-              onTap: _pickReceipt,
+              onTap: (_submitting || _compressing) ? null : _pickReceipt,
               borderRadius: BorderRadius.circular(10),
               child: Container(
                 width: double.infinity,
@@ -404,43 +441,127 @@ class _SubmitContributionReceiptSheetState extends ConsumerState<SubmitContribut
                 ),
                 child: Row(
                   children: [
-                    Icon(
-                      _receiptFile == null ? Icons.upload_file_rounded : Icons.check_circle_rounded,
-                      color: _receiptFile == null ? p.muted : AppColors.maroon,
-                      size: 26,
-                    ),
+                    if (_compressing)
+                      const SizedBox(
+                        width: 26,
+                        height: 26,
+                        child: CircularProgressIndicator(strokeWidth: 2.5, color: AppColors.maroon),
+                      )
+                    else
+                      Icon(
+                        _receiptFile == null ? Icons.upload_file_rounded : Icons.check_circle_rounded,
+                        color: _receiptFile == null ? p.muted : AppColors.maroon,
+                        size: 26,
+                      ),
                     const SizedBox(width: 12),
                     Expanded(
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          Text(
-                            _receiptFile == null
-                                ? (l.isEn ? 'Attach Payment Receipt (Image or PDF)' : 'የክፍያ ደረሰኝ ያያይዙ (ምስል ወይም ፒዲኤፍ)')
-                                : _receiptFile!.name,
-                            style: context.sans(
-                              13,
-                              weight: _receiptFile == null ? FontWeight.w500 : FontWeight.w700,
-                              color: _receiptFile == null ? p.text : AppColors.maroon,
+                          if (_compressing) ...[
+                            Text(
+                              l.isEn ? 'Compressing receipt image...' : 'ደረሰኙን በማመቻቸት ላይ...',
+                              style: context.sans(13, weight: FontWeight.w700, color: AppColors.maroon),
                             ),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          Text(
-                            _receiptFile == null
-                                ? (l.isEn ? 'Click to select from gallery, camera, or files' : 'ከጋለሪ፣ ካሜራ ወይም ሰነዶች ለመምረጥ ይጫኑ')
-                                : (l.isEn ? 'File attached. Tap to change.' : 'ፋይሉ ተያይዟል። ለመቀየር ይጫኑ።'),
-                            style: context.sans(11, color: p.muted),
-                          ),
+                            Text(
+                              l.isEn ? 'Optimizing file size while preserving clear text...' : 'የደረሰኙ ጽሑፍ ግልጽ ሆኖ እንዲነበብ መጠኑን በማመቻቸት ላይ...',
+                              style: context.sans(11, color: p.muted),
+                            ),
+                          ] else ...[
+                            Text(
+                              _receiptFile == null
+                                  ? (l.isEn ? 'Attach Payment Receipt (Image or PDF)' : 'የክፍያ ደረሰኝ ያያይዙ (ምስል ወይም ፒዲኤፍ)')
+                                  : _receiptFile!.name,
+                              style: context.sans(
+                                13,
+                                weight: _receiptFile == null ? FontWeight.w500 : FontWeight.w700,
+                                color: _receiptFile == null ? p.text : AppColors.maroon,
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                            if (_fileSizeStr != null) ...[
+                              const SizedBox(height: 2),
+                              Row(
+                                children: [
+                                  if (_compressionResult?.wasCompressed == true)
+                                    const Padding(
+                                      padding: EdgeInsets.only(right: 4),
+                                      child: Icon(Icons.auto_awesome, size: 13, color: AppColors.goldDark),
+                                    ),
+                                  Flexible(
+                                    child: Text(
+                                      _fileSizeStr!,
+                                      style: context.sans(11.5, color: _compressionResult?.wasCompressed == true ? AppColors.goldDark : p.muted, weight: FontWeight.w600),
+                                      overflow: TextOverflow.ellipsis,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ] else
+                              Text(
+                                l.isEn ? 'Click to select from gallery, camera, or files' : 'ከጋለሪ፣ ካሜራ ወይም ሰነዶች ለመምረጥ ይጫኑ',
+                                style: context.sans(11, color: p.muted),
+                              ),
+                          ],
                         ],
                       ),
                     ),
-                    Icon(Icons.chevron_right_rounded, color: p.muted),
+                    if (!_compressing) Icon(Icons.chevron_right_rounded, color: p.muted),
                   ],
                 ),
               ),
             ),
-            const SizedBox(height: 20),
+            if (_uploadError != null) ...[
+              const SizedBox(height: 10),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                decoration: BoxDecoration(
+                  color: Colors.red.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Colors.red.withValues(alpha: 0.3)),
+                ),
+                child: Row(
+                  children: [
+                    const Icon(Icons.error_outline_rounded, color: Colors.red, size: 20),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        _uploadError!,
+                        style: context.sans(12, color: Colors.red.shade900),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    TextButton(
+                      onPressed: _submitting ? null : _submit,
+                      child: Text(l.isEn ? 'Retry' : 'ደግመህ ሞክር', style: const TextStyle(fontWeight: FontWeight.bold)),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+            const SizedBox(height: 14),
+            if (_submitting) ...[
+              ClipRRect(
+                borderRadius: BorderRadius.circular(4),
+                child: LinearProgressIndicator(
+                  value: _uploadProgress > 0 ? _uploadProgress : null,
+                  backgroundColor: p.muted.withValues(alpha: 0.2),
+                  color: AppColors.maroon,
+                  minHeight: 6,
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(
+                _uploadProgress > 0
+                    ? '${l.isEn ? "Uploading receipt..." : "ደረሰኝ እየተጫነ ነው..."} ${(_uploadProgress * 100).toInt()}%'
+                    : (l.isEn ? "Submitting receipt for verification..." : "ደረሰኙን በመላክ ላይ..."),
+                style: context.sans(11, color: p.muted),
+                textAlign: TextAlign.center,
+              ),
+              const SizedBox(height: 12),
+            ],
 
             // Submit Button
             SizedBox(

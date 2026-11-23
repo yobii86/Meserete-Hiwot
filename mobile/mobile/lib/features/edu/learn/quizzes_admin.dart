@@ -45,59 +45,14 @@ class _EduQuizzesAdminScreenState extends ConsumerState<EduQuizzesAdminScreen> {
     setState(() => _loading = true);
     final repo = ref.read(eduRepositoryProvider);
     try {
-      final subs = await repo.subjects(all: true);
-      _subjects = subs;
-
-      List<Json> courses = [];
-      try {
-        courses = await repo.teaching();
-      } catch (_) {}
-      _courses = courses;
-
-      final allQuizzes = <Json>[];
-      final seenIds = <int>{};
-
-      // Load subject quizzes
-      for (final s in subs) {
-        final sId = asInt(s['id']);
-        if (sId == null) continue;
-        try {
-          final list = await repo.subjectQuizzes(sId);
-          for (final q in list) {
-            final qId = asInt(q['id']);
-            if (qId != null && !seenIds.contains(qId)) {
-              seenIds.add(qId);
-              allQuizzes.add({
-                ...q,
-                'subject_id': sId,
-                'subject_name': asStr(s['name']) ?? asStr(s['title']) ?? '',
-                'subject_name_en': asStr(s['name_en']),
-              });
-            }
-          }
-        } catch (_) {}
-      }
-
-      // Load course quizzes
-      for (final c in courses) {
-        final cId = asInt(c['id']);
-        if (cId == null) continue;
-        try {
-          final list = await repo.courseQuizzes(cId);
-          for (final q in list) {
-            final qId = asInt(q['id']);
-            if (qId != null && !seenIds.contains(qId)) {
-              seenIds.add(qId);
-              allQuizzes.add({
-                ...q,
-                'course_id': cId,
-                'course_name': asStr(c['name']) ?? asStr(c['title']) ?? '',
-                'class_name': asStr(c['class_name']),
-              });
-            }
-          }
-        } catch (_) {}
-      }
+      final results = await Future.wait([
+        repo.subjects(all: true),
+        repo.teaching().catchError((_) => <Json>[]),
+        repo.allAdminQuizzes(),
+      ]);
+      _subjects = results[0];
+      _courses = results[1];
+      final allQuizzes = results[2];
 
       if (mounted) {
         setState(() {
@@ -159,16 +114,30 @@ class _EduQuizzesAdminScreenState extends ConsumerState<EduQuizzesAdminScreen> {
     final repo = ref.read(eduRepositoryProvider);
     Json? created;
 
-    if (result.isSubject) {
+    if (result.isExam) {
       created = await runWithProgress(
         context,
-        () => repo.createSubjectQuiz(result.targetId, {'title': result.title}),
+        () async {
+          final assess = await repo.ensureFinalAssessment(result.targetId);
+          final assessId = asInt(assess['id']) ?? asInt(assess['assessment_id']);
+          return repo.createQuiz(result.targetId, {
+            'title': result.title,
+            'kind': 'exam',
+            'assessment_id': assessId,
+          });
+        },
+        success: isEn ? 'Closing exam created' : 'የማጠቃለያ ፈተና ተፈጥሯል',
+      );
+    } else if (result.isSubject) {
+      created = await runWithProgress(
+        context,
+        () => repo.createSubjectQuiz(result.targetId, {'title': result.title, 'kind': 'quiz'}),
         success: isEn ? 'Quiz created' : 'ፈተናው ተፈጥሯል',
       );
     } else {
       created = await runWithProgress(
         context,
-        () => repo.createQuiz(result.targetId, {'title': result.title}),
+        () => repo.createQuiz(result.targetId, {'title': result.title, 'kind': 'quiz'}),
         success: isEn ? 'Quiz created' : 'ፈተናው ተፈጥሯል',
       );
     }
@@ -798,11 +767,13 @@ class _NewQuizData {
     required this.title,
     required this.isSubject,
     required this.targetId,
+    this.isExam = false,
   });
 
   final String title;
   final bool isSubject;
   final int targetId;
+  final bool isExam;
 }
 
 class _NewQuizModal extends StatefulWidget {
@@ -816,6 +787,7 @@ class _NewQuizModal extends StatefulWidget {
 
 class _NewQuizModalState extends State<_NewQuizModal> {
   final _titleController = TextEditingController();
+  bool _isExam = false;
   bool _isSubject = true;
   int? _selectedId;
 
@@ -862,7 +834,7 @@ class _NewQuizModalState extends State<_NewQuizModal> {
               const Icon(Icons.add_task_rounded, color: AppColors.maroon, size: 24),
               const SizedBox(width: 10),
               Text(
-                isEn ? 'Create New Quiz' : 'አዲስ ፈተና አዘጋጅ',
+                isEn ? 'Create New Evaluation' : 'አዲስ ፈተና አዘጋጅ',
                 style: context.serif(18, weight: FontWeight.w700),
               ),
               const Spacer(),
@@ -874,8 +846,54 @@ class _NewQuizModalState extends State<_NewQuizModal> {
           ),
           const SizedBox(height: 14),
 
-          // Scope switch: Subject vs Course
-          if (widget.subjects.isNotEmpty && widget.courses.isNotEmpty) ...[
+          // Exam Type: Standard Quiz vs Closing Exam
+          Row(
+            children: [
+              Expanded(
+                child: ChoiceChip(
+                  avatar: const Icon(Icons.quiz_outlined, size: 16),
+                  label: Text(isEn ? 'Quiz' : 'መደበኛ ፈተና'),
+                  selected: !_isExam,
+                  onSelected: (val) {
+                    if (val) {
+                      setState(() {
+                        _isExam = false;
+                        if (widget.subjects.isNotEmpty) {
+                          _isSubject = true;
+                          _selectedId = asInt(widget.subjects.first['id']);
+                        }
+                      });
+                    }
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: ChoiceChip(
+                  avatar: const Icon(Icons.school_rounded, size: 16),
+                  label: Text(isEn ? 'Closing Exam' : 'የማጠቃለያ ፈተና'),
+                  selected: _isExam,
+                  onSelected: (val) {
+                    if (val) {
+                      setState(() {
+                        _isExam = true;
+                        _isSubject = false;
+                        if (widget.courses.isNotEmpty) {
+                          _selectedId = asInt(widget.courses.first['id']);
+                        } else {
+                          _selectedId = null;
+                        }
+                      });
+                    }
+                  },
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 12),
+
+          // Scope switch: Subject vs Course (only if not a Closing Exam)
+          if (!_isExam && widget.subjects.isNotEmpty && widget.courses.isNotEmpty) ...[
             Row(
               children: [
                 Expanded(
@@ -914,46 +932,59 @@ class _NewQuizModalState extends State<_NewQuizModal> {
 
           // Target Selector
           Text(
-            _isSubject
-                ? (isEn ? 'Select Curriculum Subject' : 'የትምህርት ዓይነት ይምረጡ')
-                : (isEn ? 'Select Class Course' : 'የክፍል ትምህርት ይምረጡ'),
+            _isExam
+                ? (isEn ? 'Assigned Class Course (Required for Closing Exam)' : 'የክፍል ትምህርት (ለማጠቃለያ ፈተና ግዴታ ነው)')
+                : (_isSubject
+                    ? (isEn ? 'Select Curriculum Subject' : 'የትምህርት ዓይነት ይምረጡ')
+                    : (isEn ? 'Select Class Course' : 'የክፍል ትምህርት ይምረጡ')),
             style: context.sans(13, weight: FontWeight.w600, color: p.text),
           ),
           const SizedBox(height: 6),
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            decoration: BoxDecoration(
-              color: p.card,
-              borderRadius: BorderRadius.circular(10),
-              border: Border.all(color: p.border),
-            ),
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<int>(
-                value: _selectedId,
-                isExpanded: true,
-                items: _isSubject
-                    ? [
-                        for (final s in widget.subjects)
-                          DropdownMenuItem<int>(
-                            value: asInt(s['id']),
-                            child: Text(
-                              asStr(s['category_name']) != null
-                                  ? '${s['category_name']} · ${eduNames(context, s).title}'
-                                  : eduNames(context, s).title,
+          if (_isExam && widget.courses.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 8),
+              child: Text(
+                isEn
+                    ? 'No active class courses available. Closing exams must belong to a specific enrolled course.'
+                    : 'ምንም የክፍል ትምህርት አልተገኘም። የማጠቃለያ ፈተና ለተመዘገበ የክፍል ትምህርት ብቻ ይሰጣል።',
+                style: const TextStyle(color: AppColors.maroon, fontSize: 12),
+              ),
+            )
+          else
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              decoration: BoxDecoration(
+                color: p.card,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: p.border),
+              ),
+              child: DropdownButtonHideUnderline(
+                child: DropdownButton<int>(
+                  value: _selectedId,
+                  isExpanded: true,
+                  items: _isSubject
+                      ? [
+                          for (final s in widget.subjects)
+                            DropdownMenuItem<int>(
+                              value: asInt(s['id']),
+                              child: Text(
+                                asStr(s['category_name']) != null
+                                    ? '${s['category_name']} · ${eduNames(context, s).title}'
+                                    : eduNames(context, s).title,
+                              ),
                             ),
-                          ),
-                      ]
-                    : [
-                        for (final c in widget.courses)
-                          DropdownMenuItem<int>(
-                            value: asInt(c['id']),
-                            child: Text('${asStr(c['name']) ?? ''} (${asStr(c['class_name']) ?? ''})'),
-                          ),
-                      ],
-                onChanged: (val) => setState(() => _selectedId = val),
+                        ]
+                      : [
+                          for (final c in widget.courses)
+                            DropdownMenuItem<int>(
+                              value: asInt(c['id']),
+                              child: Text('${asStr(c['name']) ?? ''} (${asStr(c['class_name']) ?? ''})'),
+                            ),
+                        ],
+                  onChanged: (val) => setState(() => _selectedId = val),
+                ),
               ),
             ),
-          ),
           const SizedBox(height: 16),
 
           // Title
@@ -961,8 +992,10 @@ class _NewQuizModalState extends State<_NewQuizModal> {
             controller: _titleController,
             autofocus: true,
             decoration: InputDecoration(
-              labelText: isEn ? 'Quiz Title' : 'የፈተናው ርዕስ',
-              hintText: isEn ? 'e.g. Midterm Assessment or Chapter 1 Quiz' : 'ለምሳሌ፡ የመጀመሪያ ወሰነ-ትምህርት ፈተና',
+              labelText: _isExam ? (isEn ? 'Closing Exam Title' : 'የማጠቃለያ ፈተና ርዕስ') : (isEn ? 'Quiz Title' : 'የፈተናው ርዕስ'),
+              hintText: _isExam
+                  ? (isEn ? 'e.g. Final Closing Examination 2026' : 'ለምሳሌ፡ የ2018 የማጠቃለያ ፈተና')
+                  : (isEn ? 'e.g. Midterm Assessment or Chapter 1 Quiz' : 'ለምሳሌ፡ የመጀመሪያ ወሰነ-ትምህርት ፈተና'),
               filled: true,
               fillColor: p.card,
               border: OutlineInputBorder(borderRadius: BorderRadius.circular(10)),
@@ -986,6 +1019,7 @@ class _NewQuizModalState extends State<_NewQuizModal> {
                   title: title,
                   isSubject: _isSubject,
                   targetId: _selectedId!,
+                  isExam: _isExam,
                 ),
               );
             },

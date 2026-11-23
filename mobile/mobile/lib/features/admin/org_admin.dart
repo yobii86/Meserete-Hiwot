@@ -18,6 +18,7 @@ import '../hub/hub_screen.dart' show paymentMethodLabel;
 import '../members/department_participation.dart' show ethPeriod, periodLabel, shiftPeriod;
 import 'admin_widgets.dart';
 import 'receipt_review_screen.dart';
+import 'contribution_details_screen.dart';
 import 'stage_admin.dart' show DepartmentAdminsScreen;
 
 // =============================================================================
@@ -363,50 +364,6 @@ class _PaymentsAdminScreenState extends ConsumerState<PaymentsAdminScreen> with 
     await _receiptCtrl.refresh();
   }
 
-  /// Payment settings (editable): currency, first month owed, grace days for "on time".
-  Future<void> _settings() async {
-    final l = context.l10n;
-    final repo = ref.read(orgRepositoryProvider);
-    final pol = await runWithProgress(context, () => repo.paymentPolicy());
-    if (pol == null || !mounted) return;
-    final currency = TextEditingController(text: asStr(pol['currency']) ?? 'ETB');
-    final grace = TextEditingController(text: '${asIntOr(pol['grace_days'])}');
-    String? start = asStr(pol['start_period']);
-    final ok = await showDialog<bool>(
-      context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setS) => AlertDialog(
-          scrollable: true,
-          title: Text(l.paymentSettings),
-          content: Column(mainAxisSize: MainAxisSize.min, children: [
-            TextField(controller: currency, decoration: InputDecoration(labelText: l.currency)),
-            TextField(controller: grace, keyboardType: TextInputType.number, decoration: InputDecoration(labelText: l.graceDays, helperText: l.graceDaysHint, helperMaxLines: 3)),
-            const SizedBox(height: 14),
-            Align(alignment: AlignmentDirectional.centerStart, child: Text(l.paymentsStartFrom, style: ctx.sans(13, color: ctx.palette.muted))),
-            Align(
-              alignment: AlignmentDirectional.centerStart,
-              child: Text(start == null ? l.fromSignUp : periodLabel(ctx, start!), style: ctx.sans(15, weight: FontWeight.w600)),
-            ),
-            Wrap(spacing: 4, children: [
-              TextButton(onPressed: () => setS(() => start = _period), child: Text(l.useSelectedMonth)),
-              if (start != null) TextButton(onPressed: () => setS(() => start = null), child: Text(l.fromSignUp)),
-            ]),
-          ]),
-          actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
-            FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(l.save)),
-          ],
-        ),
-      ),
-    );
-    if (ok != true || !mounted) return;
-    await runWithProgress(
-      context,
-      () => repo.savePaymentPolicy({'currency': currency.text.trim().isEmpty ? 'ETB' : currency.text.trim(), 'start_period': start, 'grace_days': int.tryParse(grace.text.trim()) ?? 0}),
-      success: l.saved,
-    );
-  }
-
   @override
   Widget build(BuildContext context) {
     final l = context.l10n;
@@ -424,11 +381,16 @@ class _PaymentsAdminScreenState extends ConsumerState<PaymentsAdminScreen> with 
             MaterialPageRoute<void>(builder: (_) => const ReceiptReviewAdminScreen()),
           ),
         ),
+        IconButton(
+          tooltip: l.isEn ? 'Contribution Details & Analytics' : 'የመዋጮ ዝርዝርና ትንተና',
+          icon: const Icon(Icons.analytics_outlined),
+          onPressed: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => ContributionDetailsAdminScreen(initialPeriod: _period)),
+          ),
+        ),
         ReportExportButton(kind: 'contributions', filters: () => {'period': _period}),
-        if (ref.watch(currentUserProvider)?.can(Perm.paymentsConfigure) ?? false) ...[
+        if (ref.watch(currentUserProvider)?.can(Perm.paymentsConfigure) ?? false)
           IconButton(tooltip: l.paymentRates, icon: const Icon(Icons.price_change_outlined), onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const PaymentRatesScreen()))),
-          IconButton(tooltip: l.paymentSettings, icon: const Icon(Icons.tune_rounded), onPressed: _settings),
-        ],
       ],
       bottom: TabBar(
         controller: _tabCtrl,
@@ -460,7 +422,36 @@ class _PaymentsAdminScreenState extends ConsumerState<PaymentsAdminScreen> with 
       ),
       if (_meta.isNotEmpty)
         Text(l.paymentsSummary(asIntOr(_meta['paid_count']), f.money(asDouble(_meta['total_amount']), 'ETB')), style: context.sans(12, color: context.palette.muted)),
-      Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 4), child: SearchBox(onChanged: (v) => setState(() => _q = v))),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 16, 2),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(8),
+          onTap: () => Navigator.of(context).push(
+            MaterialPageRoute<void>(builder: (_) => ContributionDetailsAdminScreen(initialPeriod: _period)),
+          ),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            decoration: BoxDecoration(
+              color: AppColors.maroon.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: AppColors.maroon.withValues(alpha: 0.2)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.bar_chart_rounded, color: AppColors.maroon, size: 20),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    l.isEn ? 'Open Dedicated Contribution Details & Month-by-Month Analytics →' : 'ዝርዝር የአባላት መዋጮና የወራት ትንተና ገጽ ክፈት →',
+                    style: context.sans(11, weight: FontWeight.w700, color: AppColors.maroon),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+      Padding(padding: const EdgeInsets.fromLTRB(16, 6, 16, 4), child: SearchBox(onChanged: (v) => setState(() => _q = v))),
       SingleChildScrollView(
         scrollDirection: Axis.horizontal,
         padding: const EdgeInsets.symmetric(horizontal: 16),

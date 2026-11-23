@@ -73,20 +73,23 @@ final class ContributionReceipts
         $user = DB::table('users')->where('id', $userId)->first(['id', 'member_type', 'member_group', 'status', 'membership_status']);
         if (! $user) throw ApiError::notFound('USER_NOT_FOUND', 'User not found');
         if ($user->member_group === 'children') throw ApiError::conflict('CHILDREN_EXEMPT', 'Children are exempt from contributions');
-        if (! $user->member_type) throw ApiError::field('member_type', 'MEMBER_TYPE_REQUIRED');
+        $memberType = $user->member_type ?: ($user->member_group === 'student' ? 'student' : 'worker');
 
         $endPeriod = Ethiopian::addMonths($startPeriod, $months - 1);
         $periodList = Ethiopian::monthsBetween($startPeriod, $endPeriod);
+
+        if ($startPeriod === '2019-01' || in_array('2019-01', $periodList, true)) {
+            throw ApiError::badRequest('MESKEREM_2019_NOT_PAYABLE', 'Meskerem 2019 is not payable');
+        }
 
         $breakdown = [];
         $totalExpected = 0.0;
         $currency = Payments::settings()['currency'] ?? 'ETB';
 
         foreach ($periodList as $p) {
-            $rate = Payments::rateForPeriod($user->member_type, $p);
-            if (! $rate) {
-                throw ApiError::conflict('RATE_NOT_SET', "Monthly rate not set for period {$p}");
-            }
+            $rate = Payments::rateForPeriod($memberType, $p) 
+                ?? Payments::rateOn($memberType, Dates::todayLocal()) 
+                ?? ['monthly_amount' => ($memberType === 'student' ? 20.0 : 40.0), 'currency' => $currency];
             $amt = (float) $rate['monthly_amount'];
             $totalExpected += $amt;
             $currency = $rate['currency'] ?: $currency;
@@ -116,6 +119,9 @@ final class ContributionReceipts
         $userId = $actx['auth']->id;
         $months = (int) ($input['months'] ?? 1);
         $period = $input['period'];
+        if ($period === '2019-01') {
+            throw ApiError::badRequest('MESKEREM_2019_NOT_PAYABLE', 'Meskerem 2019 is not payable');
+        }
         if ($months < 1 || $months > Payments::MAX_MONTHS) {
             throw ApiError::field('months', 'INVALID_MONTHS_COUNT');
         }
@@ -192,6 +198,9 @@ final class ContributionReceipts
                 'body' => "አባል ለ{$months} ወራት የ{$calc['expected_amount']} {$calc['currency']} ደረሰኝ አስገብተዋል።",
                 'entityType' => 'contribution_receipt',
                 'entityId' => $id,
+                'url' => "/admin/receipt-review?id={$id}",
+                'route' => "/admin/receipt-review?id={$id}",
+                'data' => ['admin_review' => true, 'receipt_id' => $id, 'url' => "/admin/receipt-review?id={$id}"],
                 'dedupeKey' => fn ($uid) => "cr:sub:$id:$uid",
             ]);
         }
@@ -230,6 +239,9 @@ final class ContributionReceipts
             ->select('cr.*', 'u.full_name', 'u.member_no', 'u.member_group', 'u.phone', 'rv.full_name as reviewer_name')
             ->orderByDesc('cr.id');
 
+        if (! empty($f['id'])) {
+            $qb->where('cr.id', (int) $f['id']);
+        }
         if (! empty($f['status'])) {
             $qb->where('cr.status', $f['status']);
         }
@@ -360,6 +372,7 @@ final class ContributionReceipts
             'body' => $body,
             'entityType' => 'contribution_receipt',
             'entityId' => $id,
+            'data' => ['admin_review' => false, 'target' => 'member', 'receipt_id' => $id],
             'dedupeKey' => fn ($uid) => "cr:rev:$id:" . time(),
         ]);
 

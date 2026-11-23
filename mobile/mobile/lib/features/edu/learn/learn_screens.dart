@@ -18,6 +18,7 @@ import '../../admin/edit_mode.dart';
 import '../../guidance/contextual_help_sheet.dart';
 import 'content_admin.dart' show showEduCategoryEditor, showEduSubjectEditor;
 import 'edu_home.dart' show eduDashboardProvider;
+import '../edu_formatters.dart';
 import 'edu_widgets.dart';
 
 final eduCategoriesProvider = FutureProvider.autoDispose<List<Json>>((ref) => ref.watch(eduRepositoryProvider).categories());
@@ -179,7 +180,14 @@ class SubjectCard extends ConsumerWidget {
         type: MaterialType.transparency,
         child: InkWell(
           borderRadius: BorderRadius.circular(16),
-          onTap: () => context.push('/edu/learn/subject/$subjectId'),
+          onTap: () {
+            final assignedGrade = asInt(subject['assigned_grade']);
+            if (assignedGrade != null && assignedGrade > 0) {
+              context.push('/edu/subject/$subjectId/grade/$assignedGrade');
+            } else {
+              context.push('/edu/learn/subject/$subjectId');
+            }
+          },
           child: Padding(
             padding: const EdgeInsets.all(12),
             child: Row(
@@ -266,6 +274,16 @@ class EduCategoryScreen extends ConsumerWidget {
     final isEn = l.isEn;
     final cat = ref.watch(eduCategoriesProvider).value?.where((c) => asIntOr(c['id']) == categoryId).firstOrNull;
     final names = cat == null ? null : eduNames(context, cat);
+    const canonicalNames = <int, String>{
+      1: 'ትምህርተ ሃይማኖት',
+      4: 'የመጽሐፍ ቅዱስ ጥናት',
+      5: 'ክርስቲያናዊ ሥነምግባር',
+      6: 'ሥርዓተ ቤተ ክርስቲያን',
+      3: 'የቤተክርስትያን ታሪክ',
+      7: 'ልሳነ ግእዝ',
+      8: 'ዜማ',
+    };
+    final displayTitle = names?.title ?? canonicalNames[categoryId] ?? l.elCategories;
 
     void handleBack() {
       if (context.canPop()) {
@@ -288,7 +306,7 @@ class EduCategoryScreen extends ConsumerWidget {
             tooltip: isEn ? 'Back to categories' : 'ወደ ምድቦች ተመለስ',
             onPressed: handleBack,
           ),
-          title: Text(names?.title ?? l.elCategories),
+          title: Text(displayTitle),
           actions: [
             if (cat != null && canEditFront(ref, module: 'edu'))
               IconButton(
@@ -376,7 +394,7 @@ class EduCategoryScreen extends ConsumerWidget {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              names?.title ?? '',
+                              displayTitle,
                               style: context.serif(18, weight: FontWeight.w700, color: Colors.white),
                             ),
                             if (asStr(cat?['description']) != null) ...[
@@ -403,7 +421,7 @@ class EduCategoryScreen extends ConsumerWidget {
                       const Icon(Icons.school_outlined, size: 18, color: AppColors.gold),
                       const SizedBox(width: 8),
                       Text(
-                        isEn ? 'Grades (1 - 12)' : 'ክፍሎች (ከ1ኛ እስከ 12ኛ ክፍል)',
+                        isEn ? 'Curriculum Courses & Lessons' : 'የትምህርት ክፍሎች እና ይዘቶች',
                         style: context.serif(15, weight: FontWeight.w700, color: AppColors.maroon),
                       ),
                     ],
@@ -853,6 +871,7 @@ class _EduSearchScreenState extends ConsumerState<EduSearchScreen> {
   final _q = TextEditingController();
   Timer? _debounce;
   Future<Json>? _results;
+  String _activeFilter = 'all';
 
   @override
   void dispose() {
@@ -861,26 +880,106 @@ class _EduSearchScreenState extends ConsumerState<EduSearchScreen> {
     super.dispose();
   }
 
+  void _searchNow(String v) {
+    _debounce?.cancel();
+    final query = v.trim();
+    setState(() {
+      _results = query.length < 2 ? null : ref.read(eduRepositoryProvider).search(query);
+    });
+  }
+
   void _changed(String v) {
     _debounce?.cancel();
     _debounce = Timer(const Duration(milliseconds: 350), () {
       if (!mounted) return;
-      setState(() => _results = v.trim().length < 2 ? null : ref.read(eduRepositoryProvider).search(v.trim()));
+      _searchNow(_q.text);
     });
+    setState(() {});
   }
 
   @override
   Widget build(BuildContext context) {
     final l = context.l10n;
     final p = context.palette;
+
+    final filterChips = SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: [
+          FilterChip(
+            key: const ValueKey('edu-search-chip-all'),
+            label: Text(l.all),
+            selected: _activeFilter == 'all',
+            onSelected: (_) => setState(() => _activeFilter = 'all'),
+          ),
+          const SizedBox(width: 6),
+          FilterChip(
+            key: const ValueKey('edu-search-chip-books'),
+            avatar: const Icon(Icons.menu_book_rounded, size: 16),
+            label: Text(l.libBooks),
+            selected: _activeFilter == 'books',
+            onSelected: (_) => setState(() => _activeFilter = 'books'),
+          ),
+          const SizedBox(width: 6),
+          FilterChip(
+            key: const ValueKey('edu-search-chip-classes'),
+            avatar: const Icon(Icons.school_rounded, size: 16),
+            label: Text(l.elClass),
+            selected: _activeFilter == 'classes',
+            onSelected: (_) => setState(() => _activeFilter = 'classes'),
+          ),
+          const SizedBox(width: 6),
+          FilterChip(
+            key: const ValueKey('edu-search-chip-lessons'),
+            avatar: const Icon(Icons.article_rounded, size: 16),
+            label: Text(l.elLessons),
+            selected: _activeFilter == 'lessons',
+            onSelected: (_) => setState(() => _activeFilter = 'lessons'),
+          ),
+          const SizedBox(width: 6),
+          FilterChip(
+            key: const ValueKey('edu-search-chip-assignments'),
+            avatar: const Icon(Icons.assignment_rounded, size: 16),
+            label: Text(l.elAssignments),
+            selected: _activeFilter == 'assignments',
+            onSelected: (_) => setState(() => _activeFilter = 'assignments'),
+          ),
+          const SizedBox(width: 6),
+          FilterChip(
+            key: const ValueKey('edu-search-chip-quizzes'),
+            avatar: const Icon(Icons.quiz_rounded, size: 16),
+            label: Text(l.elQuizzes),
+            selected: _activeFilter == 'quizzes',
+            onSelected: (_) => setState(() => _activeFilter = 'quizzes'),
+          ),
+        ],
+      ),
+    );
+
     return PatternScaffold(
       appBar: AppBar(
         title: TextField(
+          key: const ValueKey('edu-search-input'),
           controller: _q,
           autofocus: true,
           onChanged: _changed,
+          onSubmitted: _searchNow,
           textInputAction: TextInputAction.search,
-          decoration: InputDecoration(hintText: l.elSearchHint, border: InputBorder.none, filled: false),
+          decoration: InputDecoration(
+            hintText: l.elSearchHint,
+            border: InputBorder.none,
+            filled: false,
+            suffixIcon: _q.text.isNotEmpty
+                ? IconButton(
+                    icon: const Icon(Icons.clear_rounded),
+                    onPressed: () {
+                      _q.clear();
+                      _searchNow('');
+                    },
+                  )
+                : const Icon(Icons.search_rounded),
+          ),
         ),
       ),
       body: _results == null
@@ -898,62 +997,195 @@ class _EduSearchScreenState extends ConsumerState<EduSearchScreen> {
                 final lessons = asJsonList(d['lessons']);
                 final materials = asJsonList(d['materials']);
                 final magazines = asJsonList(d['magazines']);
-                if (cats.isEmpty && subjects.isEmpty && courses.isEmpty && units.isEmpty && lessons.isEmpty && materials.isEmpty && magazines.isEmpty) {
+                final books = asJsonList(d['books']);
+                final eduClasses = asJsonList(d['classes']);
+                final assignments = asJsonList(d['assignments']);
+                final quizzes = asJsonList(d['quizzes']);
+
+                final showAll = _activeFilter == 'all';
+                final showBooks = showAll || _activeFilter == 'books';
+                final showClasses = showAll || _activeFilter == 'classes';
+                final showLessons = showAll || _activeFilter == 'lessons';
+                final showAssignments = showAll || _activeFilter == 'assignments';
+                final showQuizzes = showAll || _activeFilter == 'quizzes';
+
+                final totalMatches = cats.length +
+                    subjects.length +
+                    courses.length +
+                    units.length +
+                    lessons.length +
+                    materials.length +
+                    magazines.length +
+                    books.length +
+                    eduClasses.length +
+                    assignments.length +
+                    quizzes.length;
+
+                if (totalMatches == 0) {
                   return EmptyView(message: l.elSearchNone, icon: Icons.search_off_rounded);
                 }
-                return ListView(padding: const EdgeInsets.fromLTRB(12, 8, 12, 24), children: [
-                  if (cats.isNotEmpty) SectionHeader(title: l.elCategories),
-                  for (final c in cats)
-                    TrackTile(title: eduNames(context, c).title, subtitle: eduNames(context, c).subtitle, leading: const ListThumb(icon: Icons.category_outlined), onTap: () => context.push('/edu/learn/category/${c['id']}')),
-                  if (subjects.isNotEmpty) SectionHeader(title: l.elSubjects),
-                  for (final s in subjects)
-                    TrackTile(title: eduNames(context, s).title, subtitle: eduNames(context, s).subtitle, leading: const ListThumb(icon: Icons.menu_book_rounded), onTap: () => context.push('/edu/learn/subject/${s['id']}')),
-                  if (courses.isNotEmpty) SectionHeader(title: l.isEn ? 'Courses' : 'ኮርሶች'),
-                  for (final c in courses)
-                    TrackTile(
-                      title: asStr(c['title']) ?? '',
-                      subtitle: asStr(c['class_name']) ?? asStr(c['code']),
-                      leading: const ListThumb(icon: Icons.class_outlined),
-                      trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
-                      onTap: () => context.push('/edu/course/${c['id']}'),
+
+                return Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    filterChips,
+                    Expanded(
+                      child: ListView(
+                        padding: const EdgeInsets.fromLTRB(12, 4, 12, 24),
+                        children: [
+                          // 1. Books
+                          if (showBooks && books.isNotEmpty) ...[
+                            SectionHeader(title: l.libBooks),
+                            for (final b in books)
+                              TrackTile(
+                                title: asStr(b['title']) ?? '',
+                                subtitle: [
+                                  if (b['author'] != null) '${b['author']}',
+                                  if (b['code'] != null) '${b['code']}',
+                                  if (b['is_digital'] == true) (l.isEn ? 'Digital' : 'ዲጂታል') else (l.isEn ? 'Physical' : 'የወረቀት'),
+                                ].join(' · '),
+                                leading: ListThumb(
+                                  icon: b['is_digital'] == true ? Icons.picture_as_pdf_outlined : Icons.menu_book_outlined,
+                                  imageUrl: asStr(b['cover_url']),
+                                ),
+                                trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
+                                onTap: () => context.push('/edu/library'),
+                              ),
+                          ],
+
+                          // 2. Classes & Courses
+                          if (showClasses && eduClasses.isNotEmpty) ...[
+                            SectionHeader(title: l.myClasses),
+                            for (final c in eduClasses)
+                              TrackTile(
+                                title: eduClassName(c),
+                                subtitle: eduClassSubtitle(c, l).isNotEmpty ? eduClassSubtitle(c, l) : null,
+                                leading: const ListThumb(icon: Icons.school_outlined),
+                                trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
+                                onTap: () => context.push('/edu/class/${c['id']}'),
+                              ),
+                          ],
+                          if (showClasses && courses.isNotEmpty) ...[
+                            SectionHeader(title: l.isEn ? 'Courses' : 'ኮርሶች'),
+                            for (final c in courses)
+                              TrackTile(
+                                title: asStr(c['title']) ?? '',
+                                subtitle: asStr(c['class_name']) ?? asStr(c['code']),
+                                leading: const ListThumb(icon: Icons.class_outlined),
+                                trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
+                                onTap: () => context.push('/edu/course/${c['id']}'),
+                              ),
+                          ],
+
+                          // 3. Curriculum Categories & Subjects
+                          if (showLessons && cats.isNotEmpty) ...[
+                            SectionHeader(title: l.elCategories),
+                            for (final c in cats)
+                              TrackTile(
+                                title: eduNames(context, c).title,
+                                subtitle: eduNames(context, c).subtitle,
+                                leading: const ListThumb(icon: Icons.category_outlined),
+                                onTap: () => context.push('/edu/learn/category/${c['id']}'),
+                              ),
+                          ],
+                          if (showLessons && subjects.isNotEmpty) ...[
+                            SectionHeader(title: l.elSubjects),
+                            for (final s in subjects)
+                              TrackTile(
+                                title: eduNames(context, s).title,
+                                subtitle: eduNames(context, s).subtitle,
+                                leading: const ListThumb(icon: Icons.menu_book_rounded),
+                                onTap: () => context.push('/edu/learn/subject/${s['id']}'),
+                              ),
+                          ],
+                          if (showLessons && units.isNotEmpty) ...[
+                            SectionHeader(title: l.isEn ? 'Units' : 'ምዕራፎች'),
+                            for (final u in units)
+                              TrackTile(
+                                title: asStr(u['title']) ?? '',
+                                subtitle: asStr(u['subject_name']),
+                                leading: const ListThumb(icon: Icons.folder_open_rounded),
+                                trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
+                                onTap: () => context.push('/edu/learn/subject/${u['subject_id']}'),
+                              ),
+                          ],
+
+                          // 4. Lessons & Learning Materials
+                          if (showLessons && lessons.isNotEmpty) ...[
+                            SectionHeader(title: l.elLessons),
+                            for (final x in lessons)
+                              TrackTile(
+                                title: asStr(x['title']) ?? '',
+                                subtitle: [if (x['subject_name'] != null) '${x['subject_name']}', if (x['unit_title'] != null) '${x['unit_title']}'].join(' · '),
+                                leading: const ListThumb(icon: Icons.article_outlined),
+                                trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
+                                onTap: () => context.push('/edu/learn/lesson/${x['id']}'),
+                              ),
+                          ],
+                          if (showLessons && materials.isNotEmpty) ...[
+                            SectionHeader(title: l.isEn ? 'Learning Materials' : 'የማስተማሪያ ሰነዶች'),
+                            for (final m in materials)
+                              TrackTile(
+                                title: asStr(m['title']) ?? '',
+                                subtitle: [if (m['lesson_title'] != null) '${m['lesson_title']}', if (m['subject_name'] != null) '${m['subject_name']}'].join(' · '),
+                                leading: const ListThumb(icon: Icons.attach_file_rounded),
+                                trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
+                                onTap: () => context.push('/edu/learn/lesson/${m['lesson_id']}'),
+                              ),
+                          ],
+
+                          // 5. Assignments
+                          if (showAssignments && assignments.isNotEmpty) ...[
+                            SectionHeader(title: l.elAssignments),
+                            for (final a in assignments)
+                              TrackTile(
+                                title: asStr(a['title']) ?? '',
+                                subtitle: [
+                                  if (a['course_title'] != null) '${a['course_title']}',
+                                  if (a['class_name'] != null) '${a['class_name']}',
+                                  if (a['due_at'] != null) '${l.isEn ? 'Due' : 'የሚያበቃበት'}: ${a['due_at']}',
+                                  if (a['max_score'] != null) '${a['max_score']} pts',
+                                ].join(' · '),
+                                leading: const ListThumb(icon: Icons.assignment_outlined),
+                                trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
+                                onTap: () => context.push('/edu/assignment/${a['id']}'),
+                              ),
+                          ],
+
+                          // 6. Quizzes
+                          if (showQuizzes && quizzes.isNotEmpty) ...[
+                            SectionHeader(title: l.elQuizzes),
+                            for (final q in quizzes)
+                              TrackTile(
+                                title: asStr(q['title']) ?? '',
+                                subtitle: [
+                                  if (q['subject_title'] != null) '${q['subject_title']}',
+                                  if (q['time_limit_minutes'] != null) '${q['time_limit_minutes']} min',
+                                  if (q['pass_score'] != null) '${l.isEn ? 'Pass' : 'ማለፊያ'}: ${q['pass_score']}',
+                                ].join(' · '),
+                                leading: const ListThumb(icon: Icons.quiz_outlined),
+                                trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
+                                onTap: () => context.push('/edu/quiz/${q['id']}'),
+                              ),
+                          ],
+
+                          // 7. Seleda Magazine
+                          if (magazines.isNotEmpty) ...[
+                            SectionHeader(title: l.isEn ? 'Seleda Magazine' : 'ሰሌዳ መጽሔት'),
+                            for (final m in magazines)
+                              TrackTile(
+                                title: asStr(m['title']) ?? '',
+                                subtitle: m['issue_no'] != null ? '${l.isEn ? 'Issue' : 'ዕትም'} ${m['issue_no']}' : null,
+                                leading: const ListThumb(icon: Icons.auto_stories_rounded),
+                                trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
+                                onTap: () => context.push('/edu/magazine/${m['id']}'),
+                              ),
+                          ],
+                        ],
+                      ),
                     ),
-                  if (units.isNotEmpty) SectionHeader(title: l.isEn ? 'Units' : 'ምዕራፎች'),
-                  for (final u in units)
-                    TrackTile(
-                      title: asStr(u['title']) ?? '',
-                      subtitle: asStr(u['subject_name']),
-                      leading: const ListThumb(icon: Icons.folder_open_rounded),
-                      trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
-                      onTap: () => context.push('/edu/learn/subject/${u['subject_id']}'),
-                    ),
-                  if (lessons.isNotEmpty) SectionHeader(title: l.elLessons),
-                  for (final x in lessons)
-                    TrackTile(
-                      title: asStr(x['title']) ?? '',
-                      subtitle: [if (x['subject_name'] != null) '${x['subject_name']}', if (x['unit_title'] != null) '${x['unit_title']}'].join(' · '),
-                      leading: const ListThumb(icon: Icons.article_outlined),
-                      trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
-                      onTap: () => context.push('/edu/learn/lesson/${x['id']}'),
-                    ),
-                  if (materials.isNotEmpty) SectionHeader(title: l.isEn ? 'Learning Materials' : 'የማስተማሪያ ሰነዶች'),
-                  for (final m in materials)
-                    TrackTile(
-                      title: asStr(m['title']) ?? '',
-                      subtitle: [if (m['lesson_title'] != null) '${m['lesson_title']}', if (m['subject_name'] != null) '${m['subject_name']}'].join(' · '),
-                      leading: const ListThumb(icon: Icons.attach_file_rounded),
-                      trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
-                      onTap: () => context.push('/edu/learn/lesson/${m['lesson_id']}'),
-                    ),
-                  if (magazines.isNotEmpty) SectionHeader(title: l.isEn ? 'Seleda Magazine' : 'ሰሌዳ መጽሔት'),
-                  for (final m in magazines)
-                    TrackTile(
-                      title: asStr(m['title']) ?? '',
-                      subtitle: m['issue_no'] != null ? '${l.isEn ? 'Issue' : 'ዕትም'} ${m['issue_no']}' : null,
-                      leading: const ListThumb(icon: Icons.auto_stories_rounded),
-                      trailing: Icon(Icons.chevron_right_rounded, color: p.faint),
-                      onTap: () => context.push('/edu/magazine/${m['id']}'),
-                    ),
-                ]);
+                  ],
+                );
               },
             ),
     );

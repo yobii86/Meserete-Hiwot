@@ -166,7 +166,7 @@ class _EduUnitsLessonsAdminScreenState extends ConsumerState<EduUnitsLessonsAdmi
                         Icon(Icons.category_outlined, size: 16, color: AppColors.goldDark),
                         const SizedBox(width: 8),
                         Text(
-                          isEn ? 'Category:' : 'የካሪኩለም ዘርፍ / ምድብ፦',
+                          isEn ? 'Subject:' : 'የትምህርት ዓይነት፦',
                           style: context.sans(12, weight: FontWeight.w600, color: p.muted),
                         ),
                       ],

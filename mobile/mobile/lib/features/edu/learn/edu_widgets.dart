@@ -680,62 +680,142 @@ class ContinueLearningCard extends StatelessWidget {
       'name': data['subject_name'],
       'name_en': data['subject_name_en'],
     });
-    return AppCard(
-      onTap: () => context.push('/edu/learn/lesson/${data['lesson_id']}'),
-      padding: const EdgeInsets.all(14),
-      child: Row(
-        children: [
-          Container(
-            width: 52,
-            height: 52,
-            decoration: BoxDecoration(
-              color: AppColors.maroon,
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: const Icon(
-              Icons.play_lesson_rounded,
-              color: AppColors.goldLight,
-              size: 28,
-            ),
+    final coverUrl = asStr(data['cover_url']);
+
+    return Container(
+      decoration: BoxDecoration(
+        color: p.card,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: p.border),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.04),
+            blurRadius: 8,
+            offset: const Offset(0, 2),
           ),
-          const SizedBox(width: 12),
-          Expanded(
+        ],
+      ),
+      child: Material(
+        type: MaterialType.transparency,
+        child: InkWell(
+          borderRadius: BorderRadius.circular(16),
+          onTap: () => context.push('/edu/learn/lesson/${data['lesson_id']}'),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  l.elContinueLearning,
-                  style: context.sans(
-                    11.5,
-                    weight: FontWeight.w600,
-                    color: p.accentText,
-                  ),
-                ),
-                Text(
-                  asStr(data['lesson_title']) ?? '',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.serif(15),
-                ),
-                Text(
-                  names.title,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: context.sans(12, color: p.muted),
+                Row(
+                  children: [
+                    ClipRRect(
+                      borderRadius: BorderRadius.circular(10),
+                      child: Container(
+                        width: 48,
+                        height: 48,
+                        decoration: BoxDecoration(
+                          color: const Color(0xFF650D20).withValues(alpha: 0.08),
+                          border: Border.all(color: const Color(0xFFC6A044).withValues(alpha: 0.5)),
+                          borderRadius: BorderRadius.circular(10),
+                        ),
+                        child: coverUrl != null && coverUrl.isNotEmpty
+                            ? Image.network(
+                                coverUrl,
+                                fit: BoxFit.cover,
+                                errorBuilder: (_, _, _) => const Icon(
+                                  Icons.auto_stories_rounded,
+                                  color: Color(0xFF650D20),
+                                  size: 26,
+                                ),
+                              )
+                            : const Icon(
+                                Icons.auto_stories_rounded,
+                                color: Color(0xFF650D20),
+                                size: 26,
+                              ),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            asStr(data['lesson_title']) ?? '',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.serif(14.5, weight: FontWeight.w700),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            names.title,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: context.sans(11.5, color: p.muted),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFF650D20),
+                        borderRadius: BorderRadius.circular(8),
+                        boxShadow: [
+                          BoxShadow(
+                            color: const Color(0xFF650D20).withValues(alpha: 0.25),
+                            blurRadius: 4,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(Icons.play_arrow_rounded, color: Colors.white, size: 16),
+                          const SizedBox(width: 2),
+                          Text(
+                            l.isEn ? 'Continue' : 'ቀጥል',
+                            style: const TextStyle(
+                              fontSize: 11.5,
+                              fontWeight: FontWeight.bold,
+                              color: Colors.white,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
                 if (total > 0) ...[
-                  const SizedBox(height: 6),
-                  EduProgressBar(
-                    value: done / total,
-                    height: 6,
-                    label: l.elPercentDone((done * 100 / total).floor()),
+                  const SizedBox(height: 10),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: ClipRRect(
+                          borderRadius: BorderRadius.circular(4),
+                          child: LinearProgressIndicator(
+                            value: (done / total).clamp(0.0, 1.0),
+                            minHeight: 5,
+                            backgroundColor: p.border,
+                            valueColor: const AlwaysStoppedAnimation<Color>(Color(0xFFC6A044)),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        l.elPercentDone((done * 100 / total).floor()),
+                        style: context.sans(11, color: const Color(0xFFC6A044), weight: FontWeight.w700),
+                      ),
+                    ],
                   ),
                 ],
               ],
             ),
           ),
-          Icon(Icons.chevron_right_rounded, color: p.faint),
-        ],
+        ),
       ),
     );
   }

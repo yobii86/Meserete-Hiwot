@@ -45,6 +45,8 @@ abstract final class SyncOp {
   static const libraryCheckout = 'library.checkout';
   static const libraryReturn = 'library.return';
   static const libraryProgress = 'library.progress';
+  static const libraryFavoriteAdd = 'library.favorite.add';
+  static const libraryFavoriteRemove = 'library.favorite.remove';
   static const eduLessonComplete = 'edu.lesson.complete';
 
   /// Changes a person made on purpose: if the server refuses one later, they are told.

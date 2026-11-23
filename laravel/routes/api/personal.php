@@ -34,20 +34,39 @@ Route::prefix('attendance')->middleware('mz')->group(function () {
         $q = Ctx::query(Z::object([
             'status' => Z::enum(['open', 'accepted', 'rejected'])->optional(),
             'program_id' => Z::coerceNumber()->int()->positive()->optional(),
+            'batch_id' => Z::string()->max(36)->optional(),
             'page' => Z::coerceNumber()->int()->positive()->optional(),
             'limit' => Z::coerceNumber()->int()->positive()->max(100)->optional(),
         ]));
         return Http::page(\App\Mz\Services\AttendanceSessions::conflicts($q, Page::params(Ctx::q())));
     })->middleware('mz:any,attendance.override,attendance.correction.approve');
+    Route::get('sync-conflicts/batches', function () {
+        $q = Ctx::query(Z::object([
+            'status' => Z::enum(['open', 'resolved'])->optional(),
+            'program_id' => Z::coerceNumber()->int()->positive()->optional(),
+            'page' => Z::coerceNumber()->int()->positive()->optional(),
+            'limit' => Z::coerceNumber()->int()->positive()->max(100)->optional(),
+        ]));
+        return Http::page(\App\Mz\Services\AttendanceSessions::conflictBatches($q, Page::params(Ctx::q())));
+    })->middleware('mz:any,attendance.override,attendance.correction.approve');
+    Route::post('sync-conflicts/bulk-resolve', function () {
+        $b = Ctx::body(Z::object([
+            'batch_id' => Z::string()->max(36)->optional(),
+            'conflict_ids' => Z::array(Z::coerceNumber()->int()->positive())->min(1)->max(500)->optional(),
+            'decision' => Z::enum(['accept', 'reject']),
+            'note' => V::text(3, 1000),
+        ])->strict());
+        return Http::ok(\App\Mz\Services\AttendanceSessions::bulkResolveConflicts(Ctx::actx(), $b));
+    })->middleware('mz:all,attendance.override');
     Route::post('sync-conflicts/{id}/resolve', function () {
         $id = Ctx::id();
         $b = Ctx::body(Z::object(['decision' => Z::enum(['accept', 'reject']), 'note' => V::text(3, 1000)])->strict());
         return Http::ok(\App\Mz\Services\AttendanceSessions::resolveConflict(Ctx::actx(), $id, $b['decision'], $b['note']));
-    })->middleware('mz:all,attendance.override');
+    })->middleware('mz:all,attendance.override')->whereNumber('id');
     Route::get('sync-conflicts/{id}/signature', function () {
         $f = \App\Mz\Services\AttendanceSessions::conflictSignature(Ctx::id());
         return response()->file($f['abs'], ['Content-Type' => $f['mime'], 'Cache-Control' => 'private, no-store']);
-    })->middleware('mz:any,attendance.override,attendance.correction.approve');
+    })->middleware('mz:any,attendance.override,attendance.correction.approve')->whereNumber('id');
     Route::get('corrections', function () {
         $q = Ctx::query(PS::correctionListQuery());
         $page = Page::params(['page' => $q['page'] ?? null, 'limit' => $q['limit'] ?? null]);
@@ -77,6 +96,10 @@ Route::prefix('attendance')->middleware('mz')->group(function () {
     Route::get('me/stats', function () use ($cats, $own) {
         $q = Ctx::query(PS::statsQuery());
         return Http::ok($own(Attendance::stats(Ctx::auth()->id, ['from' => $q['from'] ?? null, 'to' => $q['to'] ?? null, 'categoryIds' => $cats($q)])));
+    });
+    Route::get('my-yearly-summary', function () {
+        $year = (int) (Ctx::q('year') ?? 0);
+        return Http::ok(Attendance::myYearlySummary(Ctx::auth()->id, $year));
     });
     $view = 'mz:any,attendance.manage,attendance.reports,attendance.view';
     Route::get('users/{id}', function () {

@@ -16,6 +16,7 @@ import '../../core/theme/app_theme.dart';
 import '../../core/utils/formatters.dart';
 import '../../models/admin.dart';
 import '../../models/json.dart';
+import '../../models/library.dart';
 import '../../models/user.dart';
 import '../../core/providers.dart';
 import '../../repositories/providers.dart';
@@ -381,6 +382,72 @@ class _ItemPickerState extends ConsumerState<_ItemPicker> {
   }
 }
 
+Future<ItemModel?> pickBook(BuildContext context) =>
+    Navigator.of(context).push<ItemModel>(MaterialPageRoute(builder: (_) => const _BookPicker()));
+
+class _BookPicker extends ConsumerStatefulWidget {
+  const _BookPicker();
+  @override
+  ConsumerState<_BookPicker> createState() => _BookPickerState();
+}
+
+class _BookPickerState extends ConsumerState<_BookPicker> {
+  String _q = '';
+  @override
+  Widget build(BuildContext context) {
+    final l = context.l10n;
+    final repo = ref.read(libraryRepositoryProvider);
+    final isEn = l.isEn;
+    return AdminScaffold(
+      title: isEn ? 'Select Physical Book' : 'የቤተ-መጻሕፍት መጽሐፍ ይምረጡ',
+      body: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: SearchBox(
+            hint: isEn ? 'Search books by title, author, or code...' : 'መጽሐፍ በርእስ፣ ደራሲ ወይም መለያ ፈልግ...',
+            onChanged: (v) => setState(() => _q = v),
+          ),
+        ),
+        Expanded(
+          child: PagedListView<Book>(
+            key: ValueKey(_q),
+            fetch: (page) => repo.books(q: _q.isEmpty ? null : _q, kind: 'physical', page: page),
+            emptyMessage: l.noResults,
+            emptyIcon: Icons.menu_book_rounded,
+            itemBuilder: (context, b, _) {
+              final avail = b.available ?? b.copiesAvailable ?? 0;
+              final total = b.quantity ?? b.copiesTotal ?? 0;
+              return TrackTile(
+                title: b.title,
+                subtitle: [
+                  if (b.author != null && b.author!.isNotEmpty) b.author!,
+                  '${b.code} · ${l.availableOf(avail, total)}',
+                ].join(' · '),
+                leading: ListThumb(icon: Icons.menu_book_rounded, imageUrl: b.coverUrl),
+                onTap: () {
+                  final it = ItemModel(
+                    id: b.id,
+                    name: b.title,
+                    code: b.code,
+                    author: b.author,
+                    subtitle: b.subtitle,
+                    categoryName: b.categoryName,
+                    imageUrl: b.coverUrl,
+                    available: avail,
+                    quantity: total,
+                    domain: 'library',
+                  );
+                  Navigator.pop(context, it);
+                },
+              );
+            },
+          ),
+        ),
+      ]),
+    );
+  }
+}
+
 /// Signature capture on the admin's screen. Returns a PNG data URL, or null if cancelled/skipped.
 Future<String?> captureSignature(BuildContext context, {required String name, bool allowSkip = false}) {
   return Navigator.of(context).push<String>(MaterialPageRoute(fullscreenDialog: true, builder: (_) => _SignaturePad(name: name, allowSkip: allowSkip)));
@@ -612,6 +679,12 @@ String activityLabel(AppLocalizations l, String action) => switch (action) {
       'borrow' => l.act_borrow,
       'return' => l.act_return,
       'page_view' => l.act_page_view,
+      'book_read' => 'መጽሐፍ ማንበብ (Book Read)',
+      'book_download' => 'መጽሐፍ ማውረድ (Book Download)',
+      'lesson_view' => 'ትምህርት መክፈት (Lesson View)',
+      'material_open' => 'ማቴሪያል ማውረድ (Material Open)',
+      'quiz_attempt' => 'ፈተና መውሰድ (Quiz Attempt)',
+      'magazine_view' => 'ሰሌዳ መጽሔት ማንበብ (Magazine View)',
       _ => action,
     };
 

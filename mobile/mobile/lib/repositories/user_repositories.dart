@@ -41,6 +41,10 @@ class ProgramRepository {
   Future<AttendanceCalendar> myCalendar({required String from, required String to, int? categoryId}) =>
       _api.get('/attendance/me/calendar', query: {'from': from, 'to': to, 'category_id': categoryId}, parse: (d) => AttendanceCalendar.fromJson(asJson(d)));
 
+  /// Member's own yearly summary & 13 Ethiopian months breakdown.
+  Future<Json> myYearlySummary({int? year}) =>
+      _api.get('/attendance/my-yearly-summary', query: {'year': year}, parse: asJson);
+
   /// The same calendar for another member (attendance admins).
   Future<AttendanceCalendar> userCalendar(int userId, {required String from, required String to, int? categoryId}) =>
       _api.get('/attendance/users/$userId/calendar', query: {'from': from, 'to': to, 'category_id': categoryId}, parse: (d) => AttendanceCalendar.fromJson(asJson(d)));
@@ -105,6 +109,8 @@ class AccountRepository {
   Future<String> telegramLink() => _api.post('/me/telegram/link', parse: (d) => asStr(asJson(d)['url']) ?? '');
 
   Future<AppUser> telegramUnlink() => _api.delete('/me/telegram', parse: (d) => AppUser.fromJson(asJson(d)));
+
+  Future<Json> telegramStatus() => _api.get('/me/telegram/status', parse: asJson);
 
   /// Version check used for optional / forced updates.
   Future<Json> versionCheck(int versionCode) => _api.get('/app/version', query: {'platform': 'android', 'version_code': versionCode}, parse: asJson);

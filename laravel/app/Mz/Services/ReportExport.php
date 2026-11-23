@@ -162,18 +162,75 @@ final class ReportExport
                         'tables' => [self::table('Members', $columns, $roster)],
                     ];
                 }
-                $d = Reports::attendance($f);
-                if (isset($d['user_attendance'])) {
-                    $s = $d['stats'];
-                    return ['title' => 'Attendance report (member)', 'range' => $d['range'],
-                        'summary' => array_map(fn ($k) => [ucfirst(str_replace('_', ' ', $k)), $s[$k]], array_keys(array_filter($s, fn ($v) => is_scalar($v) || $v === null))),
-                        'tables' => [self::table('Sessions', [['Program', 'title'], ['Date', 'date'], ['Status', 'status']], $d['user_attendance'])]];
+                $qb = DB::table('attendance as a')
+                    ->join('programs as p', 'p.id', '=', 'a.program_id')
+                    ->join('users as u', 'u.id', '=', 'a.user_id')
+                    ->leftJoin('users as rec', 'rec.id', '=', 'a.recorded_by');
+
+                if (! empty($f['program_id'])) {
+                    $qb->where('a.program_id', (int) $f['program_id']);
                 }
-                $rows = $d['programs'];
-                $sum = fn ($k) => array_sum(array_column($rows, $k));
-                return ['title' => 'Attendance report', 'range' => $d['range'],
-                    'summary' => [['Sessions', count($rows)], ['Expected', $sum('participants')], ['Present', $sum('attended')], ['Excused', $sum('excused')], ['Absent', $sum('absent')]],
-                    'tables' => [self::table('Sessions', [['Program', 'title'], ['Date', 'date'], ['Expected', 'participants'], ['Present', 'attended'], ['Excused', 'excused'], ['Absent', 'absent'], ['Unmarked', 'unmarked'], ['Attendance taker', fn ($r) => $r['takers'] ?? '—']], $rows)]];
+                if (! empty($f['user_id'])) {
+                    $qb->where('a.user_id', (int) $f['user_id']);
+                }
+                if (! empty($f['date'])) {
+                    $dateStr = $f['date'] instanceof \DateTimeInterface ? $f['date']->format('Y-m-d') : substr((string) $f['date'], 0, 10);
+                    $qb->where('a.occurrence_date', $dateStr);
+                } else {
+                    if (! empty($f['from'])) $qb->where('a.occurrence_date', '>=', Dates::toDateOnly($f['from']));
+                    if (! empty($f['to'])) $qb->where('a.occurrence_date', '<=', Dates::toDateOnly($f['to']));
+                }
+                if (! empty($f['status']) && $f['status'] !== 'all') {
+                    $qb->where('a.status', $f['status']);
+                }
+                if (! empty($f['q'])) {
+                    $term = '%' . trim((string) $f['q']) . '%';
+                    $qb->where(fn ($w) => $w->where('u.full_name', 'like', $term)->orWhere('u.member_no', 'like', $term)->orWhere('p.title', 'like', $term));
+                }
+
+                $records = $qb->orderBy('a.occurrence_date', 'desc')
+                    ->orderBy('a.attended_at', 'desc')
+                    ->limit(1000)
+                    ->select([
+                        'a.id', 'a.occurrence_date', 'a.attended_at', 'a.status', 'a.via', 'a.signature_id', 'a.signature_exempt', 'a.notes',
+                        'p.title as program_title', 'u.id as user_id', 'u.full_name', 'u.member_no', 'u.member_group',
+                        'rec.full_name as recorded_by_name',
+                    ])
+                    ->get();
+
+                $hm = fn ($d) => $d ? Dates::of($d)?->setTimezone(Dates::tz())->format('H:i') : '—';
+                $columns = [
+                    ['Member', 'full_name'],
+                    ['Member ID', fn ($r) => \App\Mz\Services\MemberIds::format($r['member_no'] ?? null, $r['member_group'] ?? null)],
+                    ['Program', 'program_title'],
+                    ['Occurrence Date', 'occurrence_date'],
+                    ['Ethiopian Date', fn ($r) => self::ethiopianDate(($r['occurrence_date'] ?? '') . ' 12:00:00')],
+                    ['Attended Time', fn ($r) => $hm($r['attended_at'] ?? null)],
+                    ['Status', fn ($r) => ucfirst((string) ($r['status'] ?? ''))],
+                    ['Method', fn ($r) => ucfirst((string) ($r['via'] ?? 'manual'))],
+                    ['Signature', fn ($r) => ! empty($r['signature_id']) ? 'Signed' : (! empty($r['signature_exempt']) ? 'Exempt' : (($r['status'] ?? '') === 'present' ? 'Missing' : '—'))],
+                    ['Notes', fn ($r) => $r['notes'] ?? '—'],
+                ];
+
+                $presentCount = $records->where('status', 'present')->count();
+                $excusedCount = $records->where('status', 'excused')->count();
+                $absentCount = $records->where('status', 'absent')->count();
+
+                $rangeLabel = (! empty($f['from']) && ! empty($f['to'])) ? Dates::toDateOnly($f['from']) . ' to ' . Dates::toDateOnly($f['to']) : (! empty($f['date']) ? (string) $f['date'] : 'All Available');
+
+                return [
+                    'title' => 'Attendance Detail & Summary Report',
+                    'filename' => 'attendance-report-' . date('Ymd-His'),
+                    'range' => $rangeLabel,
+                    'summary' => [
+                        ['Total Attendance Records', $records->count()],
+                        ['Present', $presentCount],
+                        ['Excused', $excusedCount],
+                        ['Absent', $absentCount],
+                        ['Filter Date Range', $rangeLabel],
+                    ],
+                    'tables' => [self::table('Member Attendance Roster', $columns, $records->all())],
+                ];
             case 'borrowings':
                 $d = Reports::borrowings($f);
                 $summary = [];
@@ -664,7 +721,11 @@ final class ReportExport
         if (! empty($spec['period_label'])) return $spec['period_label'];
         $r = $spec['range'] ?? null;
         if (! $r) return null;
-        return self::ethiopianDate($r['from']) . ' – ' . self::ethiopianDate($r['to']);
+        if (is_array($r) && isset($r['from'], $r['to'])) {
+            return self::ethiopianDate($r['from']) . ' – ' . self::ethiopianDate($r['to']);
+        }
+        if (is_string($r)) return $r;
+        return null;
     }
 
     private static function csv(array $spec): string

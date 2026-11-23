@@ -26,6 +26,11 @@ import 'notification_admin.dart';
 import 'diagnostics_admin_screen.dart';
 import '../guidance/admin_guidance_screen.dart';
 import '../chat/chat_screens.dart';
+import 'receipt_review_screen.dart';
+import 'attendance_management_screen.dart';
+import 'media_migration_screen.dart';
+import 'contribution_details_screen.dart';
+import '../programs/calendar/unified_calendar_screen.dart';
 
 int _id(GoRouterState s) => int.parse(s.pathParameters['id']!);
 int? _optId(GoRouterState s) => int.tryParse(s.pathParameters['id'] ?? '');
@@ -50,14 +55,32 @@ List<RouteBase> adminRoutes(GlobalKey<NavigatorState> root) => [
           GoRoute(path: 'pages', builder: (_, _) => const PagesAdminScreen()),
           GoRoute(path: 'pages/edit/:id', builder: (_, s) => PageEditorScreen(pageId: _optId(s))),
           GoRoute(path: 'programs', builder: (_, _) => const ProgramsAdminScreen()),
+          GoRoute(path: 'programs/calendar', builder: (_, _) => const UnifiedCalendarScreen()),
           GoRoute(path: 'programs/edit/:id', builder: (_, s) => ProgramEditorScreen(programId: _optId(s))),
           GoRoute(path: 'programs/:id/participants', builder: (_, s) => ParticipantsScreen(programId: _id(s))),
           GoRoute(path: 'programs/:id/attendance', builder: (_, s) => AttendanceRosterScreen(programId: _id(s), initialSource: s.uri.queryParameters['source'])),
-          GoRoute(path: 'attendance', builder: (_, _) => const AttendanceHomeScreen()),
+          GoRoute(path: 'attendance', builder: (_, _) => const AttendanceManagementScreen()),
           GoRoute(path: 'permissions', builder: (_, _) => const PermissionRequestsScreen()),
           GoRoute(path: 'import', builder: (_, _) => const ImportScreen()),
           GoRoute(path: 'departments', builder: (_, _) => const DepartmentsScreen()),
-          GoRoute(path: 'payments', builder: (_, _) => const PaymentsAdminScreen()),
+          GoRoute(
+            path: 'payments',
+            builder: (_, s) => ContributionDetailsAdminScreen(
+              initialPeriod: s.uri.queryParameters['period'],
+            ),
+          ),
+          GoRoute(
+            path: 'contributions',
+            builder: (_, s) => ContributionDetailsAdminScreen(
+              initialPeriod: s.uri.queryParameters['period'],
+            ),
+          ),
+          GoRoute(
+            path: 'receipt-review',
+            builder: (_, s) => ReceiptReviewAdminScreen(
+              initialReceiptId: int.tryParse(s.uri.queryParameters['id'] ?? ''),
+            ),
+          ),
           GoRoute(path: 'selections', builder: (_, _) => const SelectionsScreen()),
           GoRoute(path: 'member-ids', builder: (_, _) => const MemberIdFormatScreen()),
           GoRoute(path: 'member-groups', builder: (_, _) => const MemberGroupsScreen()),
@@ -88,6 +111,7 @@ List<RouteBase> adminRoutes(GlobalKey<NavigatorState> root) => [
           GoRoute(path: 'audit', builder: (_, _) => const AuditLogScreen()),
           GoRoute(path: 'activity', builder: (_, s) => ActivityLogScreen(initialFilter: s.extra as Map<String, dynamic>?)),
           GoRoute(path: 'diagnostics', builder: (_, _) => const DiagnosticsAdminScreen()),
+          GoRoute(path: 'media-migration', builder: (_, _) => const MediaMigrationAdminScreen()),
           GoRoute(path: 'admins', builder: (_, _) => const AdminsScreen()),
           GoRoute(path: 'admins/:id', builder: (_, s) => AdminEditorScreen(adminId: _optId(s))),
           GoRoute(path: 'roles', builder: (_, _) => const RolesScreen()),

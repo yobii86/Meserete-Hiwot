@@ -13,9 +13,56 @@ import '../../widgets/states.dart';
 import '../auth/session.dart' show currentUserProvider;
 import 'admin_widgets.dart' show AdminScaffold;
 
-final diagnosticReportsProvider = FutureProvider.autoDispose.family<Json, Map<String, dynamic>>((ref, query) async {
+@immutable
+class DiagnosticsQuery {
+  const DiagnosticsQuery({
+    this.status = 'all',
+    this.severity = 'all',
+    this.module = 'all',
+    this.search = '',
+    this.page = 1,
+    this.limit = 25,
+  });
+
+  final String status;
+  final String severity;
+  final String module;
+  final String search;
+  final int page;
+  final int limit;
+
+  Map<String, dynamic> toMap() => {
+        if (status != 'all') 'status': status,
+        if (severity != 'all') 'severity': severity,
+        if (module != 'all') 'module': module,
+        if (search.isNotEmpty) 'q': search,
+        'page': page,
+        'limit': limit,
+      };
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is DiagnosticsQuery &&
+          runtimeType == other.runtimeType &&
+          status == other.status &&
+          severity == other.severity &&
+          module == other.module &&
+          search == other.search &&
+          page == other.page &&
+          limit == other.limit;
+
+  @override
+  int get hashCode => Object.hash(status, severity, module, search, page, limit);
+}
+
+final diagnosticReportsProvider = FutureProvider.autoDispose.family<Json, DiagnosticsQuery>((ref, query) async {
   final api = ref.watch(apiClientProvider);
-  return api.get<Json>('/admin/diagnostics', query: query);
+  return api.get<Json>(
+    '/admin/diagnostics',
+    query: query.toMap(),
+    parse: asJson,
+  );
 });
 
 class DiagnosticsAdminScreen extends ConsumerStatefulWidget {
@@ -33,15 +80,15 @@ class _DiagnosticsAdminScreenState extends ConsumerState<DiagnosticsAdminScreen>
   int _page = 1;
   final TextEditingController _searchController = TextEditingController();
 
-  Map<String, dynamic> _buildQuery() {
-    return {
-      if (_status != 'all') 'status': _status,
-      if (_severity != 'all') 'severity': _severity,
-      if (_module != 'all') 'module': _module,
-      if (_search.isNotEmpty) 'q': _search,
-      'page': _page,
-      'limit': 25,
-    };
+  DiagnosticsQuery _buildQuery() {
+    return DiagnosticsQuery(
+      status: _status,
+      severity: _severity,
+      module: _module,
+      search: _search,
+      page: _page,
+      limit: 25,
+    );
   }
 
   void _refresh() {
@@ -454,7 +501,7 @@ class _ReportTile extends ConsumerWidget {
     // Fetch complete report including authorized stack trace
     Json detail = report;
     try {
-      detail = await api.get<Json>('/admin/diagnostics/$id');
+      detail = await api.get<Json>('/admin/diagnostics/$id', parse: asJson);
     } catch (_) {}
 
     if (!context.mounted) return;

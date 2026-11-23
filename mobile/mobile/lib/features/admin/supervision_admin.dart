@@ -273,29 +273,204 @@ class ActivityLogScreen extends ConsumerStatefulWidget {
 }
 
 class _ActivityLogScreenState extends ConsumerState<ActivityLogScreen> {
+  String? _module;
   String? _action;
+  String _q = '';
+  DateTime? _from;
+  DateTime? _to;
+  int? _quickDays;
 
-  static const _actions = ['login', 'register', 'mezmur_view', 'mezmur_search', 'audio_play', 'favorite_add', 'download', 'offline_access', 'program_register', 'attendance', 'borrow', 'return'];
+  @override
+  void initState() {
+    super.initState();
+    if (widget.initialFilter?['from'] != null) {
+      _from = DateTime.tryParse('${widget.initialFilter!['from']}');
+    }
+    if (widget.initialFilter?['to'] != null) {
+      _to = DateTime.tryParse('${widget.initialFilter!['to']}');
+    }
+  }
+
+  static const _modules = [
+    (null, 'ሁሉም (All)'),
+    ('mezmur', 'መዝሙር (Mezmur)'),
+    ('library', 'ቤተ-መጻሕፍት (Library)'),
+    ('education', 'ትምህርት (Education)'),
+    ('programs', 'መርሐ-ግብር (Programs)'),
+    ('attendance', 'አቴንዳንስ (Attendance)'),
+  ];
+
+  static const _allActions = [
+    'login', 'register', 'mezmur_view', 'mezmur_search', 'audio_play',
+    'favorite_add', 'book_read', 'book_download', 'borrow', 'return',
+    'lesson_view', 'material_open', 'quiz_attempt', 'magazine_view',
+    'program_register', 'attendance',
+  ];
+
+  List<String> get _currentActions => switch (_module) {
+        'mezmur' => const ['mezmur_view', 'mezmur_search', 'audio_play', 'audio_complete', 'favorite_add', 'favorite_remove', 'download'],
+        'library' => const ['book_read', 'book_download', 'borrow', 'return'],
+        'education' => const ['lesson_view', 'material_open', 'quiz_attempt', 'magazine_view'],
+        'programs' => const ['program_view', 'program_register', 'program_unregister', 'reminder_create'],
+        'attendance' => const ['attendance'],
+        _ => _allActions,
+      };
 
   @override
   Widget build(BuildContext context) {
     final l = context.l10n;
+    final isEn = Localizations.localeOf(context).languageCode == 'en';
     final f = Formatters(l, Localizations.localeOf(context).languageCode);
-    final filter = {...?widget.initialFilter, 'action': _action};
+    final filter = {
+      ...?widget.initialFilter,
+      if (_module != null) 'module': _module,
+      if (_action != null) 'action': _action,
+      if (_q.trim().isNotEmpty) 'q': _q.trim(),
+      if (_from != null) 'from': _from!.toIso8601String(),
+      if (_to != null) 'to': _to!.toIso8601String(),
+    };
     return AdminScaffold(
       title: l.activityLogs,
-      actions: [ReportExportButton(kind: 'activity-logs', filters: () => {...?widget.initialFilter, 'action': _action})],
+      actions: [ReportExportButton(kind: 'activity-logs', filters: () => filter)],
       body: Column(children: [
+        Padding(
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          child: SearchBox(
+            hint: 'በስም ወይም ስልክ ፈልግ...',
+            onChanged: (v) => setState(() => _q = v),
+          ),
+        ),
+        // Module filter chips
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
           child: Row(children: [
-            ChoiceChip(label: Text(l.all), selected: _action == null, onSelected: (_) => setState(() => _action = null)),
-            for (final a in _actions)
+            for (final m in _modules)
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: ChoiceChip(
+                  label: Text(m.$2),
+                  selected: _module == m.$1,
+                  onSelected: (_) => setState(() {
+                    _module = m.$1;
+                    _action = null;
+                  }),
+                ),
+              ),
+          ]),
+        ),
+        // Action filter chips
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.fromLTRB(16, 4, 16, 4),
+          child: Row(children: [
+            ChoiceChip(
+              label: Text(l.all),
+              selected: _action == null,
+              onSelected: (_) => setState(() => _action = null),
+            ),
+            for (final a in _currentActions)
               Padding(
                 padding: const EdgeInsets.only(left: 6),
-                child: ChoiceChip(label: Text(activityLabel(l, a)), selected: _action == a, onSelected: (_) => setState(() => _action = a)),
+                child: ChoiceChip(
+                  label: Text(activityLabel(l, a)),
+                  selected: _action == a,
+                  onSelected: (_) => setState(() => _action = a),
+                ),
               ),
+          ]),
+        ),
+        // Date range filter chips
+        SingleChildScrollView(
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+          child: Row(children: [
+            ChoiceChip(
+              avatar: const Icon(Icons.date_range_outlined, size: 16),
+              label: Text(_quickDays == -1 && _from != null && _to != null
+                  ? '${f.shortDate(_from)} – ${f.shortDate(_to)}'
+                  : (isEn ? 'Date Range' : 'የቀን ክልል')),
+              selected: _from != null || _to != null,
+              onSelected: (_) async {
+                final now = DateTime.now();
+                final picked = await showDateRangePicker(
+                  context: context,
+                  firstDate: DateTime(2020),
+                  lastDate: now.add(const Duration(days: 365)),
+                  initialDateRange: _from != null && _to != null
+                      ? DateTimeRange(start: _from!, end: _to!)
+                      : DateTimeRange(start: now.subtract(const Duration(days: 7)), end: now),
+                );
+                if (picked != null) {
+                  setState(() {
+                    _from = DateTime(picked.start.year, picked.start.month, picked.start.day, 0, 0, 0);
+                    _to = DateTime(picked.end.year, picked.end.month, picked.end.day, 23, 59, 59);
+                    _quickDays = -1;
+                  });
+                }
+              },
+            ),
+            const SizedBox(width: 6),
+            ChoiceChip(
+              label: Text(l.all),
+              selected: _from == null && _to == null,
+              onSelected: (_) => setState(() {
+                _from = null;
+                _to = null;
+                _quickDays = null;
+              }),
+            ),
+            const SizedBox(width: 6),
+            ChoiceChip(
+              label: Text(isEn ? 'Today' : 'ዛሬ'),
+              selected: _quickDays == 0,
+              onSelected: (_) {
+                final now = DateTime.now();
+                setState(() {
+                  _from = DateTime(now.year, now.month, now.day, 0, 0, 0);
+                  _to = DateTime(now.year, now.month, now.day, 23, 59, 59);
+                  _quickDays = 0;
+                });
+              },
+            ),
+            const SizedBox(width: 6),
+            ChoiceChip(
+              label: Text(l.last7Days),
+              selected: _quickDays == 7,
+              onSelected: (_) {
+                final now = DateTime.now();
+                setState(() {
+                  _from = now.subtract(const Duration(days: 7));
+                  _to = now;
+                  _quickDays = 7;
+                });
+              },
+            ),
+            const SizedBox(width: 6),
+            ChoiceChip(
+              label: Text(l.last30Days),
+              selected: _quickDays == 30,
+              onSelected: (_) {
+                final now = DateTime.now();
+                setState(() {
+                  _from = now.subtract(const Duration(days: 30));
+                  _to = now;
+                  _quickDays = 30;
+                });
+              },
+            ),
+            if (_from != null || _to != null) ...[
+              const SizedBox(width: 6),
+              IconButton(
+                tooltip: isEn ? 'Clear date filter' : 'የቀን ማጣሪያ አጥፋ',
+                icon: const Icon(Icons.clear_rounded, size: 18),
+                onPressed: () => setState(() {
+                  _from = null;
+                  _to = null;
+                  _quickDays = null;
+                }),
+              ),
+            ],
           ]),
         ),
         Expanded(
@@ -317,6 +492,15 @@ class _ActivityLogScreenState extends ConsumerState<ActivityLogScreen> {
                   'mezmur' => Icons.music_note_rounded,
                   'program' => Icons.event_rounded,
                   'category' => Icons.category_rounded,
+                  'book' || 'digital_book' || 'physical_book' || 'item' => Icons.menu_book_rounded,
+                  'edu_lesson' || 'lesson' => Icons.school_rounded,
+                  'edu_material' || 'material' => Icons.description_rounded,
+                  'edu_quiz' || 'quiz' => Icons.quiz_rounded,
+                  'edu_magazine' || 'magazine' => Icons.auto_stories_rounded,
+                  'edu_course' || 'course' => Icons.auto_stories_outlined,
+                  'edu_class' || 'class' => Icons.class_outlined,
+                  'borrowing' => Icons.assignment_return_rounded,
+                  'attendance' => Icons.how_to_reg_rounded,
                   _ => meta['q'] != null ? Icons.search_rounded : Icons.timeline_rounded,
                 }),
                 onTap: () => _activityDetails(context, e),
@@ -908,6 +1092,15 @@ String? activitySubject(AppLocalizations l, Json e) {
     'mezmur' => l.entityMezmur,
     'program' => l.entityProgram,
     'category' => l.entityCategory,
+    'book' || 'digital_book' || 'physical_book' || 'item' => 'መጽሐፍ',
+    'edu_lesson' || 'lesson' => 'ትምህርት',
+    'edu_material' || 'material' => 'ማቴሪያል',
+    'edu_quiz' || 'quiz' => 'ፈተና',
+    'edu_magazine' || 'magazine' => 'ሰሌዳ መጽሔት',
+    'edu_course' || 'course' => 'ኮርስ',
+    'edu_class' || 'class' => 'ክፍል',
+    'borrowing' => 'ብድር',
+    'attendance' => 'አቴንዳንስ',
     _ => type,
   };
   return '$kind: $title';

@@ -23,6 +23,7 @@ import '../../widgets/dialogs.dart';
 import '../../widgets/states.dart';
 import '../auth/session.dart';
 import '../guidance/contextual_help_sheet.dart';
+import '../hub/hub_screen.dart' show hubBannersProvider;
 import '../../core/utils/lrc.dart';
 import 'admin_widgets.dart';
 import 'lrc_maker.dart';
@@ -948,9 +949,15 @@ class _AdEditorState extends ConsumerState<_AdEditor> {
   late int? _pageId = asJson(_ad?['target'])['type'] == 'page' ? asInt(asJson(_ad?['target'])['id']) : null;
   late int? _programId = asJson(_ad?['target'])['type'] == 'program' ? asInt(asJson(_ad?['target'])['id']) : null;
   Object? _error;
+  bool _submitting = false;
 
   Future<void> _save() async {
+    if (_submitting) return;
     if (!_form.currentState!.validate()) return;
+    setState(() {
+      _submitting = true;
+      _error = null;
+    });
     final repo = ref.read(adminRepositoryProvider);
     final body = {
       'kind': _kind,
@@ -965,13 +972,23 @@ class _AdEditorState extends ConsumerState<_AdEditor> {
     };
     try {
       final a = _ad == null ? await repo.createAd(body) : await repo.updateAd(asIntOr(_ad!['id']), body);
-      setState(() {
-        _ad = a;
-        _error = null;
-      });
-      if (mounted) showSnack(context, context.l10n.saved);
+      // Invalidate home hub banners cache so new banner shows immediately
+      ref.invalidate(hubBannersProvider);
+      if (mounted) {
+        setState(() {
+          _ad = a;
+          _error = null;
+          _submitting = false;
+        });
+        showSnack(context, context.l10n.saved);
+      }
     } catch (e) {
-      setState(() => _error = e);
+      if (mounted) {
+        setState(() {
+          _error = e;
+          _submitting = false;
+        });
+      }
     }
   }
 
@@ -1090,7 +1107,12 @@ class _AdEditorState extends ConsumerState<_AdEditor> {
                     },
                   ),
                 Expanded(
-                  child: FilledButton(onPressed: _save, child: Text(l.save)),
+                  child: FilledButton(
+                    onPressed: _submitting ? null : _save,
+                    child: _submitting
+                        ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white))
+                        : Text(l.save),
+                  ),
                 ),
               ],
             ),

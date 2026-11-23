@@ -37,9 +37,29 @@ final class Activity
     public const BORROW = 'borrow';
     public const RETURN = 'return';
     public const PAGE_VIEW = 'page_view';
+    public const BOOK_READ = 'book_read';
+    public const BOOK_DOWNLOAD = 'book_download';
+    public const LESSON_VIEW = 'lesson_view';
+    public const MATERIAL_OPEN = 'material_open';
+    public const QUIZ_ATTEMPT = 'quiz_attempt';
+    public const MAGAZINE_VIEW = 'magazine_view';
 
     /** Actions a client may report itself (via /activity or offline sync). */
-    public const CLIENT_REPORTABLE = [self::AUDIO_PLAY, self::AUDIO_COMPLETE, self::OFFLINE_ACCESS, self::MEZMUR_VIEW, self::MEZMUR_SEARCH, self::NOTIFICATION_OPEN, self::PAGE_VIEW];
+    public const CLIENT_REPORTABLE = [
+        self::AUDIO_PLAY,
+        self::AUDIO_COMPLETE,
+        self::OFFLINE_ACCESS,
+        self::MEZMUR_VIEW,
+        self::MEZMUR_SEARCH,
+        self::NOTIFICATION_OPEN,
+        self::PAGE_VIEW,
+        self::BOOK_READ,
+        self::BOOK_DOWNLOAD,
+        self::LESSON_VIEW,
+        self::MATERIAL_OPEN,
+        self::QUIZ_ATTEMPT,
+        self::MAGAZINE_VIEW,
+    ];
 
     public static function track(?int $userId, string $action, ?string $entityType = null, int|string|null $entityId = null, mixed $metadata = null, ?string $clientEventId = null, mixed $occurredAt = null, bool $inTrx = false): void
     {

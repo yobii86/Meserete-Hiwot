@@ -6,6 +6,7 @@ use App\Mz\Support\Z;
 use App\Mz\Support\ZType;
 use Illuminate\Database\Query\Builder;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Member IDs (መ/ሕ/ወ/17): a permanent number (users.member_no, from id_sequences, never edited or
@@ -101,15 +102,21 @@ final class MemberIds
      */
     public static function membersAndAdmins(Builder $qb, string $alias = 'users'): Builder
     {
-        return $qb->whereIn("$alias.account_type", ['user', 'admin'])
-            ->whereNotExists(fn ($s) => $s->select(DB::raw(1))->from('roles as hr2')->whereColumn('hr2.id', "$alias.role_id")->where('hr2.is_hidden', true));
+        $qb->whereIn("$alias.account_type", ['user', 'admin']);
+        if (Schema::hasTable('roles')) {
+            $qb->whereNotExists(fn ($s) => $s->select(DB::raw(1))->from('roles as hr2')->whereColumn('hr2.id', "$alias.role_id")->where('hr2.is_hidden', true));
+        }
+        return $qb;
     }
 
     public static function memberAccounts(Builder $qb): Builder
     {
-        return $qb->whereIn('u.account_type', ['user', 'admin'])
-            ->whereNull('u.deleted_at')
-            ->whereNotExists(fn ($s) => $s->select(DB::raw(1))->from('roles as hr')->whereColumn('hr.id', 'u.role_id')->where('hr.is_hidden', true));
+        $qb->whereIn('u.account_type', ['user', 'admin'])
+            ->whereNull('u.deleted_at');
+        if (Schema::hasTable('roles')) {
+            $qb->whereNotExists(fn ($s) => $s->select(DB::raw(1))->from('roles as hr')->whereColumn('hr.id', 'u.role_id')->where('hr.is_hidden', true));
+        }
+        return $qb;
     }
 
     /** Give the account its permanent number if it has none (idempotent; skips hidden roles). */

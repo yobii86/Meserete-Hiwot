@@ -8,6 +8,7 @@ use App\Mz\Notifications\Notifications;
 use App\Mz\Support\ApiError;
 use App\Mz\Support\Dates;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 final class EduAnnouncements
 {
@@ -273,6 +274,31 @@ final class EduAnnouncements
                 ->where('class_id', $classId)
                 ->where('status', 'active')
                 ->pluck('user_id')
+                ->all();
+        } elseif ($grade) {
+            $hasGradeCol = Schema::hasColumn('edu_classes', 'grade');
+            $studentIds = DB::table('edu_enrollments as e')
+                ->join('edu_classes as c', 'c.id', '=', 'e.class_id')
+                ->when($hasGradeCol, function ($q) use ($grade) {
+                    $q->where('c.grade', $grade);
+                }, function ($q) use ($grade) {
+                    $q->where(function ($sub) use ($grade) {
+                        $sub->where('c.level_id', $grade)
+                            ->orWhere('c.name', 'like', "{$grade}ኛ%")
+                            ->orWhere('c.name', 'like', "Grade {$grade}%");
+                    });
+                })
+                ->where('e.status', 'active')
+                ->pluck('e.user_id')
+                ->unique()
+                ->all();
+        } elseif ($subjectId) {
+            $studentIds = DB::table('edu_course_enrollments as ce')
+                ->join('edu_courses as co', 'co.id', '=', 'ce.course_id')
+                ->where('co.subject_id', $subjectId)
+                ->whereIn('ce.status', ['added', 'enrolled', 'retake', 'distance'])
+                ->pluck('ce.user_id')
+                ->unique()
                 ->all();
         }
 

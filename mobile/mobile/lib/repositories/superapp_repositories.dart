@@ -58,9 +58,17 @@ class EduRepository {
   Future<Json> createClass(Json body) => _api.post('/edu/admin/classes', body: body, parse: asJson);
   Future<Json> updateClass(int id, Json body) => _api.patch('/edu/admin/classes/$id', body: body, parse: asJson);
   Future<void> deleteClass(int id) => _api.delete<void>('/edu/admin/classes/$id');
+  Future<List<Json>> adminCourses({required int classId}) async {
+    final d = await classDetail(classId);
+    return asJsonList(d['courses']);
+  }
   Future<Json> createCourse(int classId, Json body) => _api.post('/edu/admin/classes/$classId/courses', body: body, parse: asJson);
   Future<Json> updateCourse(int id, Json body) => _api.patch('/edu/admin/courses/$id', body: body, parse: asJson);
   Future<void> deleteCourse(int id) => _api.delete<void>('/edu/admin/courses/$id');
+  Future<Json> previewCurriculum(int levelId) => _api.get('/edu/admin/curriculum/preview/$levelId', parse: asJson);
+  Future<Json> syncClassCurriculum(int classId) => _api.post('/edu/admin/classes/$classId/sync-curriculum', body: <String, dynamic>{}, parse: asJson);
+  Future<Json> syncCurriculum() => _api.post('/edu/admin/curriculum/sync', body: <String, dynamic>{}, parse: asJson);
+  Future<Json> syncGradeClasses({int? academicYearId}) => _api.post('/edu/admin/classes/sync-grades', body: {'academic_year_id': ?academicYearId}, parse: asJson);
   Future<List<Json>> setSchedule(int classId, List<Json> items) => _api.put('/edu/admin/classes/$classId/schedule', body: {'items': items}, parse: asJsonList);
   Future<List<Json>> classSchedule(int classId) => _api.get('/edu/classes/$classId/schedule', parse: asJsonList);
   Future<List<Json>> allSchedules({int? academicYearId, int? classId}) =>
@@ -212,10 +220,17 @@ class EduRepository {
   Future<Json> gradeAnswer(int attemptId, int questionId, double points, {String? feedback}) =>
       _api.put('/edu/quiz-attempts/$attemptId/grade', body: {'question_id': questionId, 'points': points, 'feedback': ?feedback}, parse: asJson);
   Future<Json> transferQuiz(int id) => _api.post('/edu/quizzes/$id/transfer', parse: asJson);
+  Future<List<Json>> allMaterials({int? subjectId, String? kind, String? search}) =>
+      _api.get('/edu/materials', query: {'subject_id': ?subjectId, 'kind': ?kind, 'search': ?search}, parse: asJsonList);
+  Future<List<Json>> allAdminQuizzes({int? subjectId, String? status, String? kind}) =>
+      _api.get('/edu/admin/quizzes', query: {'subject_id': ?subjectId, 'status': ?status, 'kind': ?kind}, parse: asJsonList);
+  Future<Json> quizPrerequisites(int id) => _api.get('/edu/quizzes/$id/prerequisites', parse: asJson);
+  Future<Json> ensureFinalAssessment(int courseId) =>
+      _api.post('/edu/courses/$courseId/assessments/ensure-final', body: <String, dynamic>{}, parse: asJson);
 
   // ---- Magazines (ሰሌዳ መጽሔት) ----
   Future<List<Json>> magazines({int? year, String? status}) =>
-      _api.get('/edu/magazines', query: {'year': ?year, 'status': ?status}, parse: asJsonList);
+      _api.get('/edu/magazines', query: {'year': ?year, 'status': ?status}, parse: (d) => d is Map && d['items'] != null ? asJsonList(d['items']) : asJsonList(d));
   Future<Json?> latestMagazine() =>
       _api.get('/edu/magazines/latest', parse: (v) => v == null ? null : asJson(v));
   Future<Json> magazineDetail(int id) =>
@@ -224,6 +239,12 @@ class EduRepository {
       _api.post('/edu/magazines', body: body, parse: asJson);
   Future<Json> updateMagazine(int id, Json body) =>
       _api.put('/edu/magazines/$id', body: body, parse: asJson);
+  Future<Json> uploadMagazinePdf(int id, String path, {Uint8List? fileBytes, String? filename, void Function(double)? onProgress}) =>
+      _api.upload('/edu/magazines/$id/file', filePath: path, fileBytes: fileBytes, filename: filename, onProgress: onProgress, parse: asJson);
+  Future<Json> uploadMagazineCover(int id, String path, {Uint8List? fileBytes, String? filename, void Function(double)? onProgress}) =>
+      _api.upload('/edu/magazines/$id/image', filePath: path, fileBytes: fileBytes, filename: filename, onProgress: onProgress, parse: asJson);
+  Future<Json> deleteMagazineCover(int id) =>
+      _api.delete('/edu/magazines/$id/image', parse: asJson);
   Future<void> deleteMagazine(int id) =>
       _api.delete<void>('/edu/magazines/$id');
   Future<List<Json>> magazineQuizzes(int magazineId) =>
@@ -309,6 +330,47 @@ class EduRepository {
   Future<Json> studentScores(int studentId) => _api.get('/edu/students/$studentId/scores', parse: asJson);
 
   // ---- Feature B: Direct Course Materials ----
+  // ---- Education Attendance Dashboard (Admin) ----
+  Future<Json> adminAttendanceDashboard({
+    int? year,
+    int? month,
+    int? academicYearId,
+    int? levelId,
+    int? classId,
+    int? courseId,
+    int? programId,
+    int? categoryId,
+    int? userId,
+    String? status,
+    String? from,
+    String? to,
+    String? q,
+  }) =>
+      _api.get('/edu/admin/attendance/dashboard', query: {
+        'year': ?year,
+        'month': ?month,
+        'academic_year_id': ?academicYearId,
+        'level_id': ?levelId,
+        'class_id': ?classId,
+        'course_id': ?courseId,
+        'program_id': ?programId,
+        'category_id': ?categoryId,
+        'user_id': ?userId,
+        'status': ?status,
+        'from': ?from,
+        'to': ?to,
+        'q': ?q,
+      }, parse: asJson);
+
+  Future<Json> adminAttendanceStudentProfile(int userId, {int? year, int? month}) =>
+      _api.get('/edu/admin/attendance/student/$userId', query: {
+        'year': ?year,
+        'month': ?month,
+      }, parse: asJson);
+
+  Future<Json> adminAttendanceRecordDetail(int attendanceId) =>
+      _api.get('/edu/admin/attendance/record/$attendanceId', parse: asJson);
+
   Future<List<Json>> directMaterials(int categoryId, int grade) =>
       _api.get('/edu/categories/$categoryId/grades/$grade/materials', parse: asJsonList);
   Future<Json> addDirectMaterialFile(int categoryId, int grade, String path, {String? title, void Function(double)? onProgress}) =>
@@ -410,6 +472,36 @@ class OrgRepository {
   Future<void> deletePayment(int id) => _api.delete<void>('/payments/$id');
   Future<Json> uploadReceipt(int id, String path) => _api.upload('/payments/$id/receipt', filePath: path, parse: asJson);
   Future<Json> memberPayments(int userId) => _api.get('/payments/member/$userId', parse: asJson);
+  Future<Json> paymentsSummary({required String period, String? memberGroup, String? memberType}) =>
+      _api.get('/payments/summary', query: {'period': period, if (memberGroup != null && memberGroup != 'all') 'member_group': memberGroup, if (memberType != null && memberType != 'all') 'member_type': memberType}, parse: asJson);
+  Future<Json> paymentsYearlySummary({int? year, String? memberGroup, String? memberType}) =>
+      _api.get('/payments/yearly-summary', query: {if (year != null) 'year': '$year', if (memberGroup != null && memberGroup != 'all') 'member_group': memberGroup, if (memberType != null && memberType != 'all') 'member_type': memberType}, parse: asJson);
+  Future<Paged<Json>> detailedPayments({
+    required String period,
+    String? status,
+    String? memberGroup,
+    String? memberType,
+    int? paidMonths,
+    int? unpaidMonths,
+    String? q,
+    int page = 1,
+    int limit = 50,
+  }) =>
+      _api.getPage(
+        '/payments/detailed',
+        (j) => j,
+        page: page,
+        query: {
+          'period': period,
+          if (status != null && status != 'all') 'status': status,
+          if (memberGroup != null && memberGroup != 'all') 'member_group': memberGroup,
+          if (memberType != null && memberType != 'all') 'member_type': memberType,
+          if (paidMonths != null) 'paid_months': '$paidMonths',
+          if (unpaidMonths != null) 'unpaid_months': '$unpaidMonths',
+          if (q != null && q.isNotEmpty) 'q': q,
+          'limit': '$limit',
+        },
+      );
 
   // ---- Monthly Contribution Receipts ----
   Future<Json> calculateContributionReceipt({required String period, required int months}) =>
@@ -419,11 +511,12 @@ class OrgRepository {
     required String filePath,
     required String period,
     required int months,
-    required double submittedAmount,
+    double? submittedAmount,
     required String method,
     required String paidOn,
     String? reference,
     String? note,
+    void Function(double)? onProgress,
   }) =>
       _api.upload(
         '/me/contribution-receipts',
@@ -431,22 +524,23 @@ class OrgRepository {
         fields: {
           'period': period,
           'months': '$months',
-          'submitted_amount': '$submittedAmount',
+          if (submittedAmount != null && submittedAmount > 0) 'submitted_amount': '$submittedAmount',
           'method': method,
           'paid_on': paidOn,
           if (reference != null && reference.isNotEmpty) 'reference': reference,
           if (note != null && note.isNotEmpty) 'member_note': note,
         },
+        onProgress: onProgress,
         parse: asJson,
       );
 
   Future<List<Json>> myContributionReceipts() => _api.get('/me/contribution-receipts', parse: asJsonList);
 
-  Future<Paged<Json>> adminContributionReceipts({String? status, String? period, String? q, int page = 1}) =>
-      _api.getPage('/org/contribution-receipts', (j) => j, page: page, query: {'status': status, 'period': period, 'q': q});
+  Future<Paged<Json>> adminContributionReceipts({int? id, String? status, String? period, String? q, int page = 1}) =>
+      _api.getPage('/org/contribution-receipts', (j) => j, page: page, query: {'id': id, 'status': status, 'period': period, 'q': q});
 
   Future<Json> reviewContributionReceipt(int id, {required String status, String? note}) =>
-      _api.post('/org/contribution-receipts/$id/review', body: {'status': status, if (note != null) 'review_note': note}, parse: asJson);
+      _api.post('/org/contribution-receipts/$id/review', body: {'status': status, 'review_note': ?note}, parse: asJson);
 
 }
 

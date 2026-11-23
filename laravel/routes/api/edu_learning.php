@@ -17,6 +17,10 @@ use Illuminate\Support\Facades\Route;
 // ትምህርት learning platform: the home dashboard, the catalog (categories → subjects → units →
 // lessons → materials), progress, search, the featured banner and digital quizzes. Every rule is
 // enforced in the services (EduLearning, EduQuizzes); the app only hides what is not allowed.
+// Public streaming & download for magazine PDFs (allows guests and in-app readers)
+Route::get('edu/magazines/{id}/pdf', fn () => EduMagazines::streamPdf(Ctx::id()));
+Route::get('edu/magazines/{id}/download', fn () => EduMagazines::streamPdf(Ctx::id(), true));
+
 Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function () {
     $all = fn () => in_array(Ctx::q()['all'] ?? null, ['1', 'true'], true);
 
@@ -42,6 +46,7 @@ Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function 
         $b = Ctx::body(Z::object(['action' => Z::enum(['complete', 'uncomplete', 'bookmark', 'unbookmark'])])->strict());
         return Http::ok(EduLearning::setProgress(Ctx::auth(), $id, $b['action']));
     });
+    Route::get('materials', fn () => Http::ok(EduLearning::allMaterials(Ctx::auth(), Ctx::q())));
     Route::get('materials/{id}/file', function () {
         $f = EduLearning::materialFile(Ctx::auth(), Ctx::id());
         return response()->file($f['abs'], [
@@ -139,6 +144,28 @@ Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function 
         }
         return Http::created(EduLearning::addDirectMaterialLink(Ctx::actx(), $meta));
     });
+    Route::post('categories/{id}/grades/{grade}/materials/link', function () {
+        $catId = Ctx::id();
+        $grade = (int) request()->route('grade');
+        $b = Ctx::body(EduSchemas::materialLink()->extend([
+            'category_id' => V::id()->optional(),
+            'grade' => Z::coerceNumber()->int()->min(1)->max(12)->optional(),
+            'subject_id' => V::id()->optional(),
+        ]));
+        $meta = [
+            'category_id' => $catId,
+            'grade' => $grade,
+            'subject_id' => ! empty($b['subject_id']) ? (int) $b['subject_id'] : null,
+            'title' => $b['title'],
+            'title_en' => $b['title_en'] ?? null,
+            'description' => $b['description'] ?? null,
+            'description_en' => $b['description_en'] ?? null,
+            'status' => 'published',
+            'kind' => $b['kind'] ?? 'link',
+            'url' => $b['url'],
+        ];
+        return Http::created(EduLearning::addDirectMaterialLink(Ctx::actx(), $meta));
+    });
 
     // ---- content editors: categories, subjects, featured (education.content / education.manage) ----
     Route::middleware('mz:any,education.content,education.manage')->prefix('content')->group(function () {
@@ -198,6 +225,55 @@ Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function 
     });
 
     // ---- quizzes: teachers & subject editors ----
+    Route::get('admin/quizzes', fn () => Http::ok(EduQuizzes::allAdminQuizzes(Ctx::auth(), Ctx::q())));
+    Route::get('quizzes/{id}/prerequisites', fn () => Http::ok(EduQuizzes::checkPrerequisites(Ctx::id())));
+    Route::post('courses/{id}/assessments/ensure-final', function () {
+        $courseId = Ctx::id();
+        $auth = Ctx::auth();
+        $course = DB::table('edu_courses')->where('id', $courseId)->first();
+        if (! $course) throw \App\Mz\Support\ApiError::notFound('COURSE_NOT_FOUND', 'Course not found');
+        if (! (App\Mz\Services\Edu::isModerator($auth) || App\Mz\Services\EduTeachers::isActive($courseId, $auth->id) || (! empty($course->subject_id) && App\Mz\Services\EduLearning::canEditSubject($auth, (int) $course->subject_id)))) {
+            App\Mz\Services\Edu::assertTeachesCourse($auth, $courseId);
+        }
+        $existing = DB::table('edu_assessments')
+            ->where('course_id', $courseId)
+            ->where(function ($w) {
+                $w->where('title', 'like', '%final%')
+                  ->orWhere('title', 'like', '%exam%')
+                  ->orWhere('title', 'like', '%ማጠቃለያ%');
+            })
+            ->first();
+        if ($existing) {
+            return Http::ok([
+                'id' => (int) $existing->id,
+                'assessment_id' => (int) $existing->id,
+                'title' => $existing->title,
+            ]);
+        }
+        $firstAss = DB::table('edu_assessments')->where('course_id', $courseId)->first();
+        if ($firstAss) {
+            return Http::ok([
+                'id' => (int) $firstAss->id,
+                'assessment_id' => (int) $firstAss->id,
+                'title' => $firstAss->title,
+            ]);
+        }
+        $insert = [
+            'course_id' => $courseId,
+            'title' => ($course->name ?? 'Course') . ' - Final Exam (የማጠቃለያ ፈተና)',
+            'created_at' => now(),
+            'updated_at' => now(),
+        ];
+        if (\Illuminate\Support\Facades\Schema::hasColumn('edu_assessments', 'max_score')) $insert['max_score'] = 100;
+        if (\Illuminate\Support\Facades\Schema::hasColumn('edu_assessments', 'weight')) $insert['weight'] = 50;
+        if (\Illuminate\Support\Facades\Schema::hasColumn('edu_assessments', 'held_on')) $insert['held_on'] = \App\Mz\Support\Dates::sql(\App\Mz\Support\Dates::now());
+        $newId = DB::table('edu_assessments')->insertGetId($insert);
+        return Http::created([
+            'id' => (int) $newId,
+            'assessment_id' => (int) $newId,
+            'title' => $insert['title'],
+        ]);
+    });
     Route::get('courses/{id}/quizzes', fn () => Http::ok(EduQuizzes::forCourse(Ctx::auth(), Ctx::id())));
     Route::post('courses/{id}/quizzes', function () {
         $id = Ctx::id();
@@ -270,6 +346,17 @@ Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function 
     Route::delete('magazines/{id}', function () {
         EduMagazines::delete(Ctx::actx(), Ctx::id());
         return Http::ok(null);
+    });
+    Route::post('magazines/{id}/file', function () {
+        $file = Upload::single('document');
+        return Http::ok(EduMagazines::uploadPdf(Ctx::actx(), Ctx::id(), $file));
+    });
+    Route::post('magazines/{id}/image', function () {
+        $file = Upload::single('image');
+        return Http::ok(EduMagazines::uploadCover(Ctx::actx(), Ctx::id(), $file));
+    });
+    Route::delete('magazines/{id}/image', function () {
+        return Http::ok(EduMagazines::removeCover(Ctx::actx(), Ctx::id()));
     });
     Route::get('magazines/{id}/quizzes', fn () => Http::ok(EduMagazines::quizzes(Ctx::auth(), Ctx::id())));
     Route::post('magazines/{id}/quizzes', function () {

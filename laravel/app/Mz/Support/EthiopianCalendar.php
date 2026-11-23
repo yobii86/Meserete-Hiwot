@@ -27,6 +27,22 @@ final class EthiopianCalendar
         13 => 'ጳጉሜ',
     ];
 
+    public const MONTHS_EN = [
+        1 => 'Meskerem',
+        2 => 'Tikimt',
+        3 => 'Hidar',
+        4 => 'Tahsas',
+        5 => 'Tir',
+        6 => 'Yekatit',
+        7 => 'Megabit',
+        8 => 'Miyazya',
+        9 => 'Ginbot',
+        10 => 'Sene',
+        11 => 'Hamle',
+        12 => 'Nehase',
+        13 => 'Pagume',
+    ];
+
     public const WEEKDAYS_AM = [
         0 => 'እሑድ',
         1 => 'ሰኞ',
@@ -126,6 +142,48 @@ final class EthiopianCalendar
             'month_am' => $monthAm,
             'date' => $dateStr,
             'formatted' => $formatted,
+        ];
+    }
+
+    /**
+     * Helper to convert Gregorian date string or DateTime to Ethiopian date details.
+     * Compatible with gregorianToEthiopianDate() callers across Attendance & Reports.
+     */
+    public static function gregorianToEthiopianDate(string|\DateTimeInterface|null $date): array
+    {
+        if (empty($date)) {
+            $today = self::todayInAddis();
+            return [
+                'ethiopian_year' => (int) $today['ethiopian_year'],
+                'ethiopian_month' => (int) $today['ethiopian_month'],
+                'ethiopian_day' => (int) $today['ethiopian_day'],
+                'month_name_am' => (string) ($today['month_name_am'] ?? ''),
+                'month_name_en' => (string) ($today['month_name_en'] ?? ''),
+                'ethiopian_date' => (string) ($today['ethiopian_date'] ?? ''),
+                'formatted' => "{$today['month_name_am']} {$today['ethiopian_day']} ቀን {$today['ethiopian_year']} ዓ.ም",
+            ];
+        }
+
+        if ($date instanceof \DateTimeInterface) {
+            $gy = (int) $date->format('Y');
+            $gm = (int) $date->format('n');
+            $gd = (int) $date->format('j');
+        } else {
+            $parts = explode('-', substr((string) $date, 0, 10));
+            $gy = (int) ($parts[0] ?? 2026);
+            $gm = (int) ($parts[1] ?? 1);
+            $gd = (int) ($parts[2] ?? 1);
+        }
+
+        $eth = self::fromGregorian($gy, $gm, $gd);
+        return [
+            'ethiopian_year' => $eth['year'],
+            'ethiopian_month' => $eth['month'],
+            'ethiopian_day' => $eth['day'],
+            'month_name_am' => $eth['month_am'],
+            'month_name_en' => self::MONTHS_EN[$eth['month']] ?? '',
+            'ethiopian_date' => $eth['date'],
+            'formatted' => $eth['formatted'],
         ];
     }
 

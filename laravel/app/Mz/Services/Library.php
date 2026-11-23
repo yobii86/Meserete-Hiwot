@@ -23,15 +23,34 @@ final class Library
 {
     private const OPEN = ['requested', 'approved'];
 
+    public static function bookTable(): string
+    {
+        return \Illuminate\Support\Facades\Schema::hasTable('books') ? 'books' : 'items';
+    }
+
     // ------------------------------------------------------------------ catalog (members)
     public static function books(AuthContext $auth, array $f, array $page): array
     {
-        $qb = DB::table('items as i')
+        $canManage = $auth->isAdmin || $auth->can('items.manage') || $auth->can('education.manage') || $auth->can('library.circulate') || $auth->can('borrowing.manage');
+
+        $table = self::bookTable();
+        $qb = DB::table("{$table} as i")
             ->leftJoin('library_categories as cat', 'cat.id', '=', 'i.library_category_id')
             ->whereNull('i.deleted_at')
-            ->where('i.status', 'active')
             ->orderBy('i.name')
             ->select('i.*', 'cat.name as category_name');
+
+        if (! empty($f['status'])) {
+            if ($f['status'] === 'all' && $canManage) {
+                // No status filter
+            } elseif ($canManage || $f['status'] === 'active') {
+                $qb->where('i.status', $f['status']);
+            } else {
+                $qb->where('i.status', 'active');
+            }
+        } elseif (! $canManage || empty($f['status_any'])) {
+            $qb->where('i.status', 'active');
+        }
 
         // Education books follow the ትምህርት module switch (server-side, not only hidden in the app).
         if (($f['domain'] ?? null) === 'timhirt') \App\Mz\Http\ModuleGate::assert($auth, 'education');
@@ -48,24 +67,40 @@ final class Library
 
         if (! empty($f['kind'])) $qb->where('i.kind', $f['kind']);
         if (! empty($f['category'])) $qb->where('i.category', $f['category']);
-        if (! empty($f['category_id'])) {
+        if (isset($f['category_id']) && $f['category_id'] !== '' && $f['category_id'] !== null) {
             $catId = (int) $f['category_id'];
-            $childIds = DB::table('library_categories')->where('id', $catId)->orWhere('parent_id', $catId)->pluck('id')->all();
-            $qb->whereIn('i.library_category_id', $childIds ?: [$catId]);
+            if ($catId === -1) {
+                $qb->whereNull('i.library_category_id');
+            } elseif ($catId > 0) {
+                $childIds = DB::table('library_categories')->where('id', $catId)->orWhere('parent_id', $catId)->pluck('id')->all();
+                $qb->whereIn('i.library_category_id', $childIds ?: [$catId]);
+            }
         }
         if (! empty($f['favorites_only'])) {
             $qb->join('library_favorites as fav', fn ($j) => $j->on('fav.item_id', '=', 'i.id')->where('fav.user_id', $auth->id));
+        }
+        if (! empty($f['language']) && $f['language'] !== 'all') {
+            $qb->where('i.language', $f['language']);
+        }
+        if (! empty($f['available_only'])) {
+            $qb->where(fn ($w) => $w->where('i.kind', 'digital')->orWhere('i.available_quantity', '>', 0));
         }
 
         if (! empty($f['q'])) {
             $q = trim((string) $f['q']);
             $qb->where(fn ($w) => $w->where('i.name', 'like', "%{$q}%")
+                ->orWhere('i.subtitle', 'like', "%{$q}%")
                 ->orWhere('i.author', 'like', "%{$q}%")
+                ->orWhere('i.publisher', 'like', "%{$q}%")
+                ->orWhere('cat.name', 'like', "%{$q}%")
+                ->orWhere('cat.name_en', 'like', "%{$q}%")
                 ->orWhere('i.code', 'like', "{$q}%"));
         }
 
-        // A digital book without its PDF yet is not shown to members.
-        $qb->where(fn ($w) => $w->where('i.kind', 'physical')->orWhereNotNull('i.file_path'));
+        // A digital book without its PDF yet is not shown to regular members. Admins can view drafts with include_drafts=true.
+        if (! $canManage || empty($f['include_drafts'])) {
+            $qb->where(fn ($w) => $w->where('i.kind', 'physical')->orWhereNotNull('i.file_path'));
+        }
 
         $res = Page::paginate($qb, $page);
 
@@ -76,14 +111,16 @@ final class Library
 
         // Check active borrowings in borrowings and library_loans so borrowed books are recognized
         if (! empty($itemIds)) {
-            $activeLoans = DB::table('borrowings')
-                ->where('user_id', $auth->id)
-                ->whereIn('item_id', $itemIds)
-                ->whereIn('status', ['pending_approval', 'active', 'partially_returned'])
-                ->pluck('status', 'item_id')
-                ->all();
-            foreach ($activeLoans as $itemId => $status) {
-                $mine[$itemId] = $status === 'pending_approval' ? 'requested' : 'issued';
+            if (\Illuminate\Support\Facades\Schema::hasTable('borrowings')) {
+                $activeLoans = DB::table('borrowings')
+                    ->where('user_id', $auth->id)
+                    ->whereIn('item_id', $itemIds)
+                    ->whereIn('status', ['pending_approval', 'active', 'partially_returned'])
+                    ->pluck('status', 'item_id')
+                    ->all();
+                foreach ($activeLoans as $itemId => $status) {
+                    $mine[$itemId] = $status === 'pending_approval' ? 'requested' : 'issued';
+                }
             }
             if (\Illuminate\Support\Facades\Schema::hasTable('library_loans') && \Illuminate\Support\Facades\Schema::hasTable('library_copies')) {
                 $activeCopyLoans = DB::table('library_loans as l')
@@ -140,13 +177,20 @@ final class Library
 
     public static function book(AuthContext $auth, int $id): array
     {
-        $i = DB::table('items as i')
+        $canManage = $auth->isAdmin || $auth->can('items.manage') || $auth->can('education.manage') || $auth->can('library.circulate') || $auth->can('borrowing.manage');
+
+        $table = self::bookTable();
+        $qb = DB::table("{$table} as i")
             ->leftJoin('library_categories as cat', 'cat.id', '=', 'i.library_category_id')
             ->where('i.id', $id)
             ->whereNull('i.deleted_at')
-            ->where('i.status', 'active')
-            ->select('i.*', 'cat.name as category_name')
-            ->first();
+            ->select('i.*', 'cat.name as category_name');
+
+        if (! $canManage) {
+            $qb->where('i.status', 'active');
+        }
+
+        $i = $qb->first();
 
         if (! $i) throw ApiError::notFound('BOOK_NOT_FOUND', 'Book not found');
         if ($i->domain === 'timhirt') \App\Mz\Http\ModuleGate::assert($auth, 'education');
@@ -177,41 +221,72 @@ final class Library
         return [
             'id' => (int) $i->id,
             'title' => $i->name,
+            'subtitle' => $i->subtitle ?? null,
             'author' => $i->author,
+            'publisher' => $i->publisher ?? null,
+            'publication_year' => $i->publication_year !== null ? (int) $i->publication_year : null,
+            'language' => $i->language ?? 'am',
             'code' => $i->code,
             'kind' => $i->kind,
             'category' => $i->category,
             'category_id' => $i->library_category_id ? (int) $i->library_category_id : null,
             'category_name' => $extra['category_name'] ?? ($i->category_name ?? $i->category ?? null),
+            'category_type' => $i->category_type ?? null,
             'description' => $i->description,
             'domain' => $i->domain,
             'cover_url' => Storage::url($i->image),
             'available' => $extra['copies_available'] ?? ($i->kind === 'physical' ? (int) $i->available_quantity : null),
             'quantity' => $extra['copies_total'] ?? ($i->kind === 'physical' ? (int) $i->quantity : null),
-            'file_url' => $i->kind === 'digital' && $i->file_path ? "/library/books/{$i->id}/file" : null,
+            'file_url' => $i->kind === 'digital' && $i->file_path ? url("/api/v1/library/books/{$i->id}/file") : null,
+            'stream_url' => $i->kind === 'digital' && $i->file_path ? url("/api/v1/library/books/{$i->id}/file") : null,
             'file_size' => $i->file_size !== null ? (int) $i->file_size : null,
-            'narration_url' => ! empty($i->narration_path) ? "/library/books/{$i->id}/narration" : null,
+            'narration_url' => ! empty($i->narration_path) ? url("/api/v1/library/books/{$i->id}/narration") : null,
             'narration_mime' => $i->narration_mime ?? null,
             'narration_duration' => $i->narration_duration !== null ? (int) $i->narration_duration : null,
             'downloads' => (int) $i->downloads,
             'is_favorite' => (bool) ($extra['is_favorite'] ?? false),
             'progress' => $extra['progress'] ?? null,
             'my_request' => $extra['my_request'] ?? null,
+            'status' => $i->status ?? 'active',
+            'condition' => $i->condition ?? null,
+            'location' => $i->location ?? null,
+            'notes' => $i->notes ?? null,
         ];
     }
 
     // ------------------------------------------------------------------ categories (F16)
-    public static function categories(?string $domain, bool $tree = false): array
+    public static function categories(?string $domain, bool $tree = false, ?string $type = null, bool $onlyActive = false): array
     {
         $q = DB::table('library_categories')->orderBy('sort_order')->orderBy('name');
-        if ($domain) $q->where('domain', $domain);
+        if ($domain) {
+            $q->where(function ($w) use ($domain) {
+                $w->where('domain', $domain)
+                  ->orWhere('domain', '')
+                  ->orWhereNull('domain');
+            });
+        }
+        if ($type) {
+            $q->where(fn ($w) => $w->where('category_type', $type)->orWhere('category_type', 'both'));
+        }
+        if ($onlyActive) {
+            $q->where('is_active', true);
+        }
         $cats = $q->get();
 
-        $counts = DB::table('items')
+        $countsQ = DB::table('items')
             ->whereNull('deleted_at')
             ->where('status', 'active')
-            ->whereNotNull('library_category_id')
-            ->groupBy('library_category_id')
+            ->whereNotNull('library_category_id');
+
+        if ($domain) {
+            $countsQ->where(function ($w) use ($domain) {
+                $w->where('domain', $domain)
+                  ->orWhere('domain', '')
+                  ->orWhereNull('domain');
+            });
+        }
+
+        $counts = $countsQ->groupBy('library_category_id')
             ->selectRaw('library_category_id, count(*) as c')
             ->pluck('c', 'library_category_id')
             ->all();
@@ -220,9 +295,12 @@ final class Library
             'id' => (int) $c->id,
             'parent_id' => $c->parent_id ? (int) $c->parent_id : null,
             'domain' => $c->domain,
+            'category_type' => $c->category_type ?? 'physical',
             'name' => $c->name,
             'name_en' => $c->name_en,
+            'description' => $c->description ?? null,
             'code' => $c->code,
+            'is_active' => (bool) ($c->is_active ?? true),
             'sort_order' => (int) $c->sort_order,
             'books_count' => (int) ($counts[$c->id] ?? 0),
         ], $cats->all());
@@ -260,6 +338,17 @@ final class Library
             'updated_at' => now(),
         ];
 
+        if (\Illuminate\Support\Facades\Schema::hasColumn('library_categories', 'category_type')) {
+            $catType = $data['category_type'] ?? 'both';
+            $row['category_type'] = in_array($catType, ['physical', 'digital', 'both'], true) ? $catType : 'both';
+        }
+        if (\Illuminate\Support\Facades\Schema::hasColumn('library_categories', 'description')) {
+            $row['description'] = ! empty($data['description']) ? trim((string) $data['description']) : null;
+        }
+        if (\Illuminate\Support\Facades\Schema::hasColumn('library_categories', 'is_active')) {
+            $row['is_active'] = array_key_exists('is_active', $data) ? (bool) $data['is_active'] : true;
+        }
+
         if ($id) {
             $existing = DB::table('library_categories')->where('id', $id)->first();
             if (! $existing) throw ApiError::notFound('CATEGORY_NOT_FOUND', 'Category not found');
@@ -291,10 +380,15 @@ final class Library
     }
 
     // ------------------------------------------------------------------ favorites & progress (F16)
-    public static function favorite(int $userId, int $itemId, bool $fav): array
+    public static function favorite(int $userId, int $itemId, ?bool $fav = null): array
     {
-        $book = DB::table('items')->where(['id' => $itemId, 'status' => 'active'])->whereNull('deleted_at')->first();
+        $book = DB::table(self::bookTable())->where(['id' => $itemId, 'status' => 'active'])->whereNull('deleted_at')->first();
         if (! $book) throw ApiError::notFound('BOOK_NOT_FOUND', 'Book not found');
+
+        if ($fav === null) {
+            $isFav = DB::table('library_favorites')->where(['user_id' => $userId, 'item_id' => $itemId])->exists();
+            $fav = ! $isFav;
+        }
 
         if ($fav) {
             DB::table('library_favorites')->insertOrIgnore([
@@ -306,7 +400,7 @@ final class Library
             DB::table('library_favorites')->where(['user_id' => $userId, 'item_id' => $itemId])->delete();
         }
 
-        return ['item_id' => $itemId, 'is_favorite' => $fav];
+        return ['item_id' => $itemId, 'is_favorite' => (bool) $fav, 'favorited' => (bool) $fav];
     }
 
     public static function myFavorites(AuthContext $auth, array $page): array
@@ -314,9 +408,19 @@ final class Library
         return self::books($auth, ['favorites_only' => true], $page);
     }
 
+    public static function myFavoriteIds(int $userId): array
+    {
+        return DB::table('library_favorites')
+            ->where('user_id', $userId)
+            ->pluck('item_id')
+            ->map(fn ($id) => (int) $id)
+            ->values()
+            ->all();
+    }
+
     public static function saveProgress(int $userId, int $itemId, array $data): array
     {
-        $book = DB::table('items')->where(['id' => $itemId, 'status' => 'active'])->whereNull('deleted_at')->first();
+        $book = DB::table(self::bookTable())->where(['id' => $itemId, 'status' => 'active'])->whereNull('deleted_at')->first();
         if (! $book) throw ApiError::notFound('BOOK_NOT_FOUND', 'Book not found');
 
         $page = max(1, (int) ($data['page'] ?? 1));
@@ -366,20 +470,23 @@ final class Library
     // ------------------------------------------------------------------ files & narration
     public static function file(AuthContext $auth, int $id): array
     {
-        $i = DB::table('items')->where(['id' => $id, 'kind' => 'digital', 'status' => 'active'])->whereNull('deleted_at')->first();
+        $i = DB::table(self::bookTable())->where(['id' => $id, 'kind' => 'digital', 'status' => 'active'])->whereNull('deleted_at')->first();
         if (! $i || ! $i->file_path) throw ApiError::notFound('BOOK_NOT_FOUND', 'Book not found');
         if ($i->domain === 'timhirt') \App\Mz\Http\ModuleGate::assert($auth, 'education');
         $abs = Storage::privatePath($i->file_path);
         if (! is_file($abs)) throw ApiError::notFound('BOOK_NOT_FOUND', 'Book not found');
-        DB::table('items')->where('id', $id)->increment('downloads');
-        if ($auth->accountType === 'user') Activity::track($auth->id, Activity::DOWNLOAD, 'item', $id, ['kind' => 'book']);
+        DB::table(self::bookTable())->where('id', $id)->increment('downloads');
+        if ($auth->accountType === 'user') {
+            Activity::track($auth->id, Activity::BOOK_READ, 'book', $id, ['name' => $i->name, 'kind' => 'digital']);
+            Activity::track($auth->id, Activity::DOWNLOAD, 'item', $id, ['kind' => 'book']);
+        }
         $name = preg_replace('/[^\p{L}\p{N}._ -]/u', '', $i->name) ?: "book-$id";
         return ['abs' => $abs, 'mime' => $i->file_mime ?: 'application/pdf', 'name' => mb_substr($name, 0, 120) . '.pdf'];
     }
 
     public static function narrationFile(AuthContext $auth, int $id): array
     {
-        $i = DB::table('items')->where(['id' => $id, 'status' => 'active'])->whereNull('deleted_at')->first();
+        $i = DB::table(self::bookTable())->where(['id' => $id, 'status' => 'active'])->whereNull('deleted_at')->first();
         if (! $i || ! $i->narration_path) throw ApiError::notFound('NARRATION_NOT_FOUND', 'Narration audio not found');
         if ($i->domain === 'timhirt') \App\Mz\Http\ModuleGate::assert($auth, 'education');
 
@@ -613,5 +720,241 @@ final class Library
             Audit::log($actx, 'library.request_issue', 'library_request', $id, ['borrowing_id' => $borrowingId], inTrx: true);
         });
         return self::serializeRequest(self::requestQuery()->where('r.id', $id)->first());
+    }
+
+    // ------------------------------------------------------------------ Dedicated Book Management
+    public static function saveDigitalBook(array $actx, array $data, ?int $id = null): array
+    {
+        $name = trim((string) ($data['name'] ?? $data['title'] ?? ''));
+        if ($name === '') throw ApiError::field('name', 'REQUIRED');
+
+        $categoryId = ! empty($data['library_category_id']) ? (int) $data['library_category_id'] : (! empty($data['category_id']) ? (int) $data['category_id'] : null);
+        if ($categoryId) {
+            $cat = DB::table('library_categories')->where('id', $categoryId)->first();
+            if (! $cat) throw ApiError::field('library_category_id', 'CATEGORY_NOT_FOUND');
+            if (isset($cat->category_type) && $cat->category_type === 'physical') {
+                throw ApiError::field('library_category_id', 'CATEGORY_MUST_BE_DIGITAL', 'Selected category is restricted to physical books.');
+            }
+        }
+
+        return DB::transaction(function () use ($actx, $data, $id, $name, $categoryId) {
+            $table = self::bookTable();
+            $existing = null;
+            if ($id) {
+                $existing = DB::table($table)->where('id', $id)->whereNull('deleted_at')->lockForUpdate()->first();
+                if (! $existing && $table !== 'items') {
+                    $existing = DB::table('items')->where('id', $id)->whereNull('deleted_at')->first();
+                }
+                if (! $existing) throw ApiError::notFound('BOOK_NOT_FOUND', 'Digital book not found');
+            }
+
+            // Generate unique digital book code if creating or missing
+            $code = ! empty($data['code']) ? trim((string) $data['code']) : ($existing->code ?? null);
+            if (empty($code)) {
+                $catCode = $categoryId ? (DB::table('library_categories')->where('id', $categoryId)->value('code') ?: 'DIG') : 'DIG';
+                $codePrefix = strtoupper("DIG-{$catCode}-");
+                $maxNum = 0;
+                foreach (DB::table($table)->where('code', 'like', $codePrefix . '%')->pluck('code') as $c) {
+                    if (preg_match('/^' . preg_quote($codePrefix, '/') . '(\d+)$/', strtoupper($c), $m)) {
+                        $maxNum = max($maxNum, (int) $m[1]);
+                    }
+                }
+                $code = $codePrefix . str_pad((string) ($maxNum + 1), 3, '0', STR_PAD_LEFT);
+            }
+
+            $dupQ = DB::table($table)->where('code', $code)->whereNull('deleted_at');
+            if ($id) $dupQ->where('id', '<>', $id);
+            if ($dupQ->exists()) throw ApiError::conflict('ITEM_CODE_TAKEN', 'Book code already exists');
+
+            // Status: strictly preserve existing if not given; default to 'active'
+            $status = $data['status'] ?? ($existing ? $existing->status : 'active');
+            if (! in_array($status, ['active', 'inactive'], true)) $status = 'active';
+
+            // Domain: strictly preserve existing or default to 'timhirt' for Education
+            $domain = ! empty($data['domain']) ? $data['domain'] : ($existing ? $existing->domain : 'timhirt');
+
+            $row = [
+                'name' => $name,
+                'subtitle' => array_key_exists('subtitle', $data) ? (! empty($data['subtitle']) ? trim((string) $data['subtitle']) : null) : ($existing->subtitle ?? null),
+                'author' => array_key_exists('author', $data) ? (! empty($data['author']) ? trim((string) $data['author']) : null) : ($existing->author ?? null),
+                'publisher' => array_key_exists('publisher', $data) ? (! empty($data['publisher']) ? trim((string) $data['publisher']) : null) : ($existing->publisher ?? null),
+                'publication_year' => array_key_exists('publication_year', $data) && $data['publication_year'] !== null && $data['publication_year'] !== '' ? (int) $data['publication_year'] : ($existing->publication_year ?? null),
+                'language' => ! empty($data['language']) ? $data['language'] : ($existing->language ?? 'am'),
+                'description' => array_key_exists('description', $data) ? (! empty($data['description']) ? trim((string) $data['description']) : null) : ($existing->description ?? null),
+                'library_category_id' => $categoryId,
+                'category' => 'books',
+                'kind' => 'digital',
+                'domain' => $domain,
+                'code' => $code,
+                'status' => $status,
+                'quantity' => 0,
+                'available_quantity' => 0,
+                'updated_by' => $actx['auth']->id,
+                'updated_at' => now(),
+            ];
+
+            if ($id) {
+                DB::table($table)->where('id', $id)->update($row);
+                Audit::log($actx, 'library.digital_book_update', 'book', $id, ['name' => $name, 'status' => $status], inTrx: true);
+                $bookId = $id;
+            } else {
+                $row['created_by'] = $actx['auth']->id;
+                $row['created_at'] = now();
+                $bookId = DB::table($table)->insertGetId($row);
+                Audit::log($actx, 'library.digital_book_create', 'book', $bookId, ['name' => $name, 'status' => $status], inTrx: true);
+            }
+
+            return self::book($actx['auth'], $bookId);
+        });
+    }
+
+    public static function savePhysicalBook(array $actx, array $data, ?int $id = null): array
+    {
+        $name = trim((string) ($data['name'] ?? $data['title'] ?? ''));
+        if ($name === '') throw ApiError::field('name', 'REQUIRED');
+
+        $categoryId = ! empty($data['library_category_id']) ? (int) $data['library_category_id'] : (! empty($data['category_id']) ? (int) $data['category_id'] : null);
+        if ($categoryId) {
+            $cat = DB::table('library_categories')->where('id', $categoryId)->first();
+            if (! $cat) throw ApiError::field('library_category_id', 'CATEGORY_NOT_FOUND');
+            if (isset($cat->category_type) && $cat->category_type === 'digital') {
+                throw ApiError::field('library_category_id', 'CATEGORY_MUST_BE_PHYSICAL', 'Selected category is restricted to digital books.');
+            }
+        }
+
+        return DB::transaction(function () use ($actx, $data, $id, $name, $categoryId) {
+            $table = self::bookTable();
+            $existing = null;
+            if ($id) {
+                $existing = DB::table($table)->where('id', $id)->whereNull('deleted_at')->lockForUpdate()->first();
+                if (! $existing && $table !== 'items') {
+                    $existing = DB::table('items')->where('id', $id)->whereNull('deleted_at')->first();
+                }
+                if (! $existing) throw ApiError::notFound('BOOK_NOT_FOUND', 'Physical book not found');
+            }
+
+            $code = ! empty($data['code']) ? trim((string) $data['code']) : ($existing->code ?? null);
+            if (empty($code)) {
+                $catCode = $categoryId ? (DB::table('library_categories')->where('id', $categoryId)->value('code') ?: 'LIB') : 'LIB';
+                $codePrefix = strtoupper("LIB-{$catCode}-");
+                $maxNum = 0;
+                foreach (DB::table($table)->where('code', 'like', $codePrefix . '%')->pluck('code') as $c) {
+                    if (preg_match('/^' . preg_quote($codePrefix, '/') . '(\d+)$/', strtoupper($c), $m)) {
+                        $maxNum = max($maxNum, (int) $m[1]);
+                    }
+                }
+                $code = $codePrefix . str_pad((string) ($maxNum + 1), 3, '0', STR_PAD_LEFT);
+            }
+
+            $dupQ = DB::table($table)->where('code', $code)->whereNull('deleted_at');
+            if ($id) $dupQ->where('id', '<>', $id);
+            if ($dupQ->exists()) throw ApiError::conflict('ITEM_CODE_TAKEN', 'Book code already exists');
+
+            $status = $data['status'] ?? ($existing ? $existing->status : 'active');
+            $domain = ! empty($data['domain']) ? $data['domain'] : ($existing ? $existing->domain : 'mezmur');
+            $qty = isset($data['quantity']) ? (int) $data['quantity'] : ($existing ? $existing->quantity : 1);
+            $borrowed = $existing ? ($existing->quantity - $existing->available_quantity) : 0;
+            if ($qty < $borrowed) throw ApiError::field('quantity', 'QUANTITY_BELOW_BORROWED');
+            $available = $qty - $borrowed;
+
+            $row = [
+                'name' => $name,
+                'subtitle' => array_key_exists('subtitle', $data) ? (! empty($data['subtitle']) ? trim((string) $data['subtitle']) : null) : ($existing->subtitle ?? null),
+                'author' => array_key_exists('author', $data) ? (! empty($data['author']) ? trim((string) $data['author']) : null) : ($existing->author ?? null),
+                'publisher' => array_key_exists('publisher', $data) ? (! empty($data['publisher']) ? trim((string) $data['publisher']) : null) : ($existing->publisher ?? null),
+                'publication_year' => array_key_exists('publication_year', $data) && $data['publication_year'] !== null && $data['publication_year'] !== '' ? (int) $data['publication_year'] : ($existing->publication_year ?? null),
+                'language' => ! empty($data['language']) ? $data['language'] : ($existing->language ?? 'am'),
+                'description' => array_key_exists('description', $data) ? (! empty($data['description']) ? trim((string) $data['description']) : null) : ($existing->description ?? null),
+                'library_category_id' => $categoryId,
+                'category' => 'books',
+                'kind' => 'physical',
+                'domain' => $domain,
+                'code' => $code,
+                'status' => $status,
+                'quantity' => $qty,
+                'available_quantity' => $available,
+                'condition' => array_key_exists('condition', $data) ? (! empty($data['condition']) ? trim((string) $data['condition']) : null) : ($existing->condition ?? null),
+                'location' => array_key_exists('location', $data) ? (! empty($data['location']) ? trim((string) $data['location']) : null) : ($existing->location ?? null),
+                'notes' => array_key_exists('notes', $data) ? (! empty($data['notes']) ? trim((string) $data['notes']) : null) : ($existing->notes ?? null),
+                'updated_by' => $actx['auth']->id,
+                'updated_at' => now(),
+            ];
+
+            if ($id) {
+                DB::table($table)->where('id', $id)->update($row);
+                Audit::log($actx, 'library.physical_book_update', 'book', $id, ['name' => $name, 'status' => $status], inTrx: true);
+                $bookId = $id;
+            } else {
+                $row['created_by'] = $actx['auth']->id;
+                $row['created_at'] = now();
+                $bookId = DB::table($table)->insertGetId($row);
+                Audit::log($actx, 'library.physical_book_create', 'book', $bookId, ['name' => $name, 'status' => $status], inTrx: true);
+            }
+
+            return self::book($actx['auth'], $bookId);
+        });
+    }
+
+    public static function uploadDigitalBookFile(array $actx, int $id, \Illuminate\Http\UploadedFile $file): array
+    {
+        $table = self::bookTable();
+        $book = DB::table($table)->where('id', $id)->whereNull('deleted_at')->first();
+        if (! $book) throw ApiError::notFound('BOOK_NOT_FOUND', 'Book not found');
+
+        $saved = Storage::save('book', Storage::FOLDERS['BOOKS'], $file);
+        $oldFile = $book->file_path;
+
+        DB::table($table)->where('id', $id)->update([
+            'file_path' => $saved['path'],
+            'file_mime' => $saved['mime'],
+            'file_size' => $saved['size'],
+            'kind' => 'digital',
+            'updated_by' => $actx['auth']->id,
+            'updated_at' => now(),
+        ]);
+
+        try {
+            MediaProcessing::renderPdfPagesToWebp(
+                Storage::resolveInside($saved['path']),
+                'pdf_pages/book_' . $id,
+                'private',
+                150,
+                85,
+                'item',
+                $id
+            );
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('Book PDF rendering error: ' . $e->getMessage());
+        }
+
+        Audit::log($actx, 'library.digital_book_file_replace', 'book', $id, ['size' => $saved['size']]);
+        if ($oldFile && $oldFile !== $saved['path']) {
+            Storage::remove($oldFile);
+        }
+
+        return self::book($actx['auth'], $id);
+    }
+
+    public static function uploadBookCover(array $actx, int $id, \Illuminate\Http\UploadedFile $file): array
+    {
+        $table = self::bookTable();
+        $book = DB::table($table)->where('id', $id)->whereNull('deleted_at')->first();
+        if (! $book) throw ApiError::notFound('BOOK_NOT_FOUND', 'Book not found');
+
+        $saved = Storage::save('image', Storage::FOLDERS['ITEM_IMAGES'], $file);
+        $oldImage = $book->image;
+
+        DB::table($table)->where('id', $id)->update([
+            'image' => $saved['path'],
+            'updated_by' => $actx['auth']->id,
+            'updated_at' => now(),
+        ]);
+
+        Audit::log($actx, 'library.book_cover_replace', 'book', $id, ['image' => 'replaced']);
+        if ($oldImage && $oldImage !== $saved['path']) {
+            Storage::remove($oldImage);
+        }
+
+        return self::book($actx['auth'], $id);
     }
 }

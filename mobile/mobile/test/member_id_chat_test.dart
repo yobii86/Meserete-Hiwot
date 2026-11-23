@@ -104,25 +104,25 @@ void main() {
       expect(homeSectionOf('/home/categories'), HomeSection.mezmur);
     });
 
-    test('ትምህርት has its own tabs: Learn · Library · Progress · Settings', () {
+    test('ትምህርት has its own tabs: Home · Class · My Library · Progress · Settings', () {
       const nav = NavLayout(section: HomeSection.education, branch: 0, location: '/edu');
       expect(nav.isEducation, isTrue);
       expect(nav.hasCategories, isFalse);
-      for (var i = 0; i < 4; i++) {
+      for (var i = 0; i < 5; i++) {
         expect(nav.branchFor(i), isNull);
       }
-      expect([for (var i = 0; i < 4; i++) nav.routeFor(i)], ['/edu', '/edu/library', '/edu/progress', '/settings?from=edu']);
+      expect([for (var i = 0; i < 5; i++) nav.routeFor(i)], ['/edu', '/edu/classes', '/edu/library', '/edu/progress', '/settings?from=edu']);
       NavLayout at(String p, [int branch = 0]) => NavLayout(section: HomeSection.education, branch: branch, location: p);
       expect(at('/edu').selectedIndex, 0);
-      expect(at('/edu/learn/lesson/4').selectedIndex, 0);
+      expect(at('/edu/learn/lesson/4').selectedIndex, 1);
       expect(at('/edu/search').selectedIndex, 0);
-      expect(at('/edu/class/2').selectedIndex, 0);
-      expect(at('/edu/course/2').selectedIndex, 0);
-      expect(at('/edu/library').selectedIndex, 1);
-      expect(at('/edu/borrowings').selectedIndex, 1);
-      expect(at('/edu/progress').selectedIndex, 2);
-      expect(at('/edu/quiz/9').selectedIndex, 2);
-      expect(at('/settings').selectedIndex, 3);
+      expect(at('/edu/class/2').selectedIndex, 1);
+      expect(at('/edu/course/2').selectedIndex, 1);
+      expect(at('/edu/library').selectedIndex, 2);
+      expect(at('/edu/borrowings').selectedIndex, 2);
+      expect(at('/edu/progress').selectedIndex, 3);
+      expect(at('/edu/quiz/9').selectedIndex, 3);
+      expect(at('/settings').selectedIndex, 4);
       expect(const NavLayout(section: HomeSection.mezmur, branch: 0, location: '/home').routeFor(1), '/home/categories');
     });
   });

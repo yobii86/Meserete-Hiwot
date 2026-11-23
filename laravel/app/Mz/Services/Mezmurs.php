@@ -26,6 +26,9 @@ final class Mezmurs
 
     public static function serializeListItem(object $m): array
     {
+        $baseUrl = rtrim((string) config('mz.public_base_url'), '/');
+        $streamUrl = $m->audio_path ? ($baseUrl . '/api/v1/mezmurs/' . $m->id . '/stream.mp3') : null;
+        $directUrl = $m->audio_path ? Storage::url($m->audio_path) : null;
         $out = [
             'id' => $m->id,
             'title' => $m->title,
@@ -34,7 +37,9 @@ final class Mezmurs
             'cover_url' => Storage::url($m->cover_image),
             'has_audio' => (bool) $m->audio_path,
             // Lets the app queue the next / previous Mezmur straight from a list.
-            'audio_url' => $m->audio_path ? Storage::url($m->audio_path) : null,
+            'audio_url' => $streamUrl,
+            'stream_url' => $streamUrl,
+            'direct_audio_url' => $directUrl,
             'audio_duration_sec' => $m->audio_duration_sec,
             'is_featured' => (bool) $m->is_featured,
             'is_today' => $m->study_on ? Dates::toDateOnly($m->study_on) === Dates::todayLocal() : false,
@@ -64,12 +69,22 @@ final class Mezmurs
 
     private static function serializeFull(object $m, array $tags = []): array
     {
+        $baseUrl = rtrim((string) config('mz.public_base_url'), '/');
+        $streamUrl = $m->audio_path ? ($baseUrl . '/api/v1/mezmurs/' . $m->id . '/stream.mp3') : null;
+        $directUrl = $m->audio_path ? Storage::url($m->audio_path) : null;
         return self::serializeListItem($m) + [
             'lyrics' => $m->lyrics,
             'lrc' => $m->lrc ?? null,
             'description' => $m->description,
             'tags' => $tags,
-            'audio' => $m->audio_path ? ['url' => Storage::url($m->audio_path), 'mime' => $m->audio_mime, 'size' => $m->audio_size, 'duration_sec' => $m->audio_duration_sec] : null,
+            'audio' => $m->audio_path ? [
+                'url' => $streamUrl,
+                'stream_url' => $streamUrl,
+                'direct_url' => $directUrl,
+                'mime' => $m->audio_mime ?: 'audio/mpeg',
+                'size' => $m->audio_size,
+                'duration_sec' => $m->audio_duration_sec,
+            ] : null,
             'view_count' => $m->view_count,
             'download_count' => $m->download_count,
             'youtube_url' => $m->youtube_url ?? null,
@@ -423,5 +438,45 @@ final class Mezmurs
         $res = Page::paginate($qb, $page);
         $tags = self::tagsFor(array_map(fn ($m) => $m->id, $res['items']));
         return ['items' => array_map(fn ($m) => self::serializeFull($m, $tags[$m->id] ?? []), $res['items']), 'meta' => $res['meta']];
+    }
+
+    /** Stream Mezmur audio supporting HTTP 206 byte-range seeking. */
+    public static function streamAudio(int $id)
+    {
+        $m = DB::table('mezmurs')->where('id', $id)->whereNull('deleted_at')->first(['id', 'audio_path', 'audio_mime']);
+        if (! $m || ! $m->audio_path) {
+            throw ApiError::notFound('AUDIO_NOT_FOUND', 'Audio not found');
+        }
+
+        try {
+            $abs = Storage::resolveInside($m->audio_path);
+        } catch (\Throwable) {
+            throw ApiError::notFound('AUDIO_NOT_FOUND', 'Audio file not found');
+        }
+
+        // Check companion .mp3 if target is missing
+        if (! file_exists($abs)) {
+            $pathInfo = pathinfo($abs);
+            $companionMp3 = $pathInfo['dirname'] . DIRECTORY_SEPARATOR . $pathInfo['filename'] . '.mp3';
+            if (file_exists($companionMp3)) {
+                $abs = $companionMp3;
+                $m->audio_mime = 'audio/mpeg';
+            } else {
+                throw ApiError::notFound('AUDIO_NOT_FOUND', 'Audio file not found on disk');
+            }
+        }
+
+        $mime = $m->audio_mime ?: 'audio/mpeg';
+        $headers = [
+            'Content-Type' => $mime,
+            'Accept-Ranges' => 'bytes',
+            'Cache-Control' => 'public, max-age=604800',
+            'X-Content-Type-Options' => 'nosniff',
+            'Access-Control-Allow-Origin' => '*',
+            'Access-Control-Allow-Headers' => 'Range, Authorization, Content-Type',
+            'Access-Control-Expose-Headers' => 'Content-Range, Content-Length, Accept-Ranges',
+        ];
+
+        return response()->file($abs, $headers);
     }
 }

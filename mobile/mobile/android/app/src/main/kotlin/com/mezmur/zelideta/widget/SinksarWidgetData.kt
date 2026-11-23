@@ -135,7 +135,7 @@ data class SinksarWidgetData(
                 for (i in 0 until aArr.length()) annualList.add(aArr.getString(i))
                 val mArr = JSONArray(prefs.getString(KEY_MONTHLY_FEASTS, "[]"))
                 for (i in 0 until mArr.length()) monthlyList.add(mArr.getString(i))
-            } catch (_: Exception) {}
+            } catch (e: Exception) {}
 
             return SinksarWidgetData(
                 gregorianDate = gregDate,

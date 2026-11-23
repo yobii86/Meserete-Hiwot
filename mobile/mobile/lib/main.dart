@@ -47,6 +47,7 @@ Future<void> main() async {
   await initializeDateFormatting();
 
   final store = SecureStore();
+  await store.load();
   final prefs = await LocalPrefs.load();
   final db = await LocalDb.open();
 

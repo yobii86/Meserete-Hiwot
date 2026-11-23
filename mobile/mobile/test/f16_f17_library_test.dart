@@ -9,6 +9,8 @@ import 'package:mezmur_zelideta/core/providers.dart';
 import 'package:mezmur_zelideta/core/storage/secure_store.dart';
 import 'package:mezmur_zelideta/core/theme/app_theme.dart';
 import 'package:mezmur_zelideta/features/auth/session.dart';
+import 'package:mezmur_zelideta/features/library/book_cover.dart';
+import 'package:mezmur_zelideta/features/library/book_detail_screen.dart';
 import 'package:mezmur_zelideta/features/library/books_screen.dart';
 import 'package:mezmur_zelideta/features/library/circulation_screen.dart';
 import 'package:mezmur_zelideta/l10n/app_localizations.dart';
@@ -311,9 +313,9 @@ void main() {
       expect(find.text('Digital books'), findsOneWidget);
       expect(find.text('Books to borrow'), findsOneWidget);
       expect(find.text('Mine'), findsOneWidget);
-      expect(find.byKey(const ValueKey('cat-chip-all')), findsOneWidget);
-      expect(find.byKey(const ValueKey('cat-chip-favorites')), findsOneWidget);
-      expect(find.text('መጽሐፈ ቅዳሴ ትርጓሜ'), findsOneWidget);
+      expect(find.byKey(const ValueKey('library-shortcut-discover')), findsOneWidget);
+      expect(find.byKey(const ValueKey('library-shortcut-favorites')), findsOneWidget);
+      expect(find.text('መጽሐፈ ቅዳሴ ትርጓሜ'), findsAtLeastNWidgets(1));
     });
 
     testWidgets('LibraryCirculationScreen renders tabs and checkout elements', (tester) async {
@@ -360,6 +362,154 @@ void main() {
       expect(find.text('Overdue'), findsOneWidget);
       expect(find.byKey(const ValueKey('checkout-copy-code-input')), findsOneWidget);
       expect(find.byKey(const ValueKey('checkout-select-borrower-btn')), findsOneWidget);
+    });
+
+    testWidgets('BookCover renders liturgical fallback with cross, title, and author when cover is null', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: AppTheme.light(),
+          home: const Scaffold(
+            body: BookCover(
+              title: 'መጽሐፈ ቅዳሴ ትርጓሜ',
+              author: 'መጋቤ ሐዲስ',
+              category: 'ስነ መለኮት',
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('መጽሐፈ ቅዳሴ ትርጓሜ'), findsOneWidget);
+      expect(find.text('መጋቤ ሐዲስ'), findsOneWidget);
+      expect(find.byIcon(Icons.church_rounded), findsOneWidget);
+    });
+
+    testWidgets('BookDetailScreen renders book details, metrics grid, and primary action', (tester) async {
+      final book = const Book(
+        id: 99,
+        title: 'የኢትዮጵያ ኦርቶዶክስ ተዋሕዶ ቤተ ክርስቲያን ታሪክ',
+        author: 'ብፁዕ አቡነ ጎርጎርዮስ',
+        code: 'BK-0099',
+        kind: 'digital',
+        category: 'ታሪክ',
+        fileUrl: '/library/books/99/file',
+        fileSize: 4194304,
+        description: 'የቤተ ክርስቲያናችን ጥንታዊ ታሪክ',
+      );
+
+      final api = await _createApi(FakeAdapter((req) {
+        if (req.path == '/library/books/99') {
+          return (
+            status: 200,
+            body: {
+              'success': true,
+              'code': 'OK',
+              'message': 'OK',
+              'data': book.toJson()..['id'] = 99..['title'] = book.title..['author'] = book.author,
+              'errors': [],
+            },
+          );
+        }
+        return (status: 404, body: 'Not found');
+      }));
+
+      final repo = LibraryRepository(api);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            currentUserProvider.overrideWithValue(null),
+            apiClientProvider.overrideWithValue(api),
+            libraryRepositoryProvider.overrideWithValue(repo),
+          ],
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+            ],
+            locale: const Locale('en'),
+            home: BookDetailScreen(book: book),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      expect(find.text('Book Details'), findsOneWidget);
+      expect(find.text('የኢትዮጵያ ኦርቶዶክስ ተዋሕዶ ቤተ ክርስቲያን ታሪክ'), findsAtLeastNWidgets(1));
+      expect(find.text('ብፁዕ አቡነ ጎርጎርዮስ'), findsAtLeastNWidgets(1));
+      expect(find.text('Format'), findsOneWidget);
+      expect(find.text('Status'), findsOneWidget);
+      expect(find.text('About This Book'), findsOneWidget);
+      expect(find.byKey(const ValueKey('detail-action-99')), findsOneWidget);
+    });
+
+    testWidgets('LibraryBooksScreen switches between category shortcuts (Discover, Favorites, Downloads, Reading)', (tester) async {
+      final api = await _createApi(FakeAdapter((req) {
+        if (req.path == '/library/categories') {
+          return (status: 200, body: ok([]));
+        }
+        if (req.path == '/library/books') {
+          return (
+            status: 200,
+            body: {
+              'success': true,
+              'code': 'OK',
+              'message': 'OK',
+              'data': [],
+              'meta': {'page': 1, 'pages': 1, 'total': 0},
+              'errors': [],
+            },
+          );
+        }
+        return (status: 404, body: 'Not found');
+      }));
+
+      final repo = LibraryRepository(api);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            currentUserProvider.overrideWithValue(null),
+            apiClientProvider.overrideWithValue(api),
+            libraryRepositoryProvider.overrideWithValue(repo),
+          ],
+          child: MaterialApp(
+            theme: AppTheme.light(),
+            localizationsDelegates: const [
+              AppLocalizations.delegate,
+              GlobalMaterialLocalizations.delegate,
+              GlobalWidgetsLocalizations.delegate,
+            ],
+            locale: const Locale('en'),
+            home: const LibraryBooksScreen(),
+          ),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      // Tap Favorites shortcut
+      await tester.tap(find.byKey(const ValueKey('library-shortcut-favorites')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('favorites-shelf-list')), findsOneWidget);
+
+      // Tap Downloads shortcut
+      await tester.tap(find.byKey(const ValueKey('library-shortcut-downloads')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('downloads-shelf-list')), findsOneWidget);
+
+      // Tap Reading shortcut
+      await tester.tap(find.byKey(const ValueKey('library-shortcut-reading')));
+      await tester.pumpAndSettle();
+      expect(find.byKey(const ValueKey('reading-shelf-list')), findsOneWidget);
+
+      // Tap Discover shortcut
+      await tester.tap(find.byKey(const ValueKey('library-shortcut-discover')));
+      await tester.pumpAndSettle();
+      expect(find.text('Explore Books'), findsOneWidget);
     });
   });
 }

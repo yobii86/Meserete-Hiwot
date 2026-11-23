@@ -19,6 +19,11 @@ Route::prefix('items')->middleware('mz')->group(function () {
     $itemSchema = fn () => Z::object([
         'name' => V::text(1, 200),
         'author' => V::optionalText(200),
+        'subtitle' => V::optionalText(200),
+        'publisher' => V::optionalText(200),
+        'publication_year' => Z::number()->int()->min(1000)->max(2100)->nullable()->optional(),
+        'language' => Z::string()->trim()->max(10)->optional(),
+        'library_category_id' => V::id()->nullable()->optional(),
         'kind' => Z::enum(['physical', 'digital'])->optional(),
         // Empty: generated from the department and category (e.g. FIN-EQ-0004).
         'code' => Z::string()->trim()->max(60)->regex('#^([A-Za-z0-9_./-]+)?$#', 'INVALID_CODE')->optional(),

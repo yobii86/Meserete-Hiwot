@@ -425,7 +425,7 @@ abstract class AppLocalizations {
   /// No description provided for @errorTimeout.
   ///
   /// In am, this message translates to:
-  /// **'ምላሽ ለማግኘት ጊዜው አልፏል። እባክዎ እንደገና ይሞክሩ።'**
+  /// **'ምላሽ ለማግኘት ጊዜው አልፏል። እባክዎ የኢንተርኔት  ግንኙነት ያረጋግጡና እንደገና ይሞክሩ።'**
   String get errorTimeout;
 
   /// No description provided for @errorUnauthorized.

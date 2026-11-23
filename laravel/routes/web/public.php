@@ -30,6 +30,9 @@ $publicFile = function (string $path) {
         'Cache-Control' => 'public, max-age=604800',
         'X-Content-Type-Options' => 'nosniff',
         'Accept-Ranges' => 'bytes',
+        'Access-Control-Allow-Origin' => '*',
+        'Access-Control-Allow-Headers' => 'Range, Authorization, Content-Type',
+        'Access-Control-Expose-Headers' => 'Content-Range, Content-Length, Accept-Ranges',
     ];
     $ext = strtolower(pathinfo($abs, PATHINFO_EXTENSION));
     $isMediaOrDoc = in_array($ext, [
@@ -43,6 +46,27 @@ $publicFile = function (string $path) {
 };
 Route::get('files/{path}', $publicFile)->where('path', '.*');
 Route::get('storage/{path}', $publicFile)->where('path', '.*');
+
+// Web alias for library books file (so older clients and web readers work seamlessly)
+Route::get('library/books/{id}/file', function (int $id) {
+    $token = request()->bearerToken() ?: request()->query('token');
+    $auth = $token ? \App\Mz\Auth\Catalog::authenticateToken($token) : \App\Mz\Http\Ctx::auth();
+    $f = \App\Mz\Services\Library::file($auth, $id);
+    $headers = [
+        'Content-Type' => $f['mime'],
+        'Accept-Ranges' => 'bytes',
+        'Cache-Control' => 'private, max-age=3600',
+        'Access-Control-Allow-Origin' => '*',
+        'Access-Control-Allow-Headers' => 'Range, Authorization, Content-Type',
+        'Access-Control-Expose-Headers' => 'Content-Range, Content-Length, Accept-Ranges',
+    ];
+    if (request()->query('download') === '1' || request()->query('download') === 'true') {
+        return response()->download($f['abs'], $f['name'], $headers);
+    }
+    return response()->file($f['abs'], $headers + [
+        'Content-Disposition' => 'inline; filename="' . $f['name'] . '"',
+    ]);
+});
 
 // OpenAPI spec (generated from ../backend/docs/openapi.yaml).
 Route::get('api/openapi.json', fn () => response(file_get_contents(resource_path('openapi.json')), 200, ['Content-Type' => 'application/json; charset=utf-8']));

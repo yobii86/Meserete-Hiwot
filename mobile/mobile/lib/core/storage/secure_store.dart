@@ -12,18 +12,29 @@ class SecureStore {
   static const _scope = 'token_scope';
   static const _deviceId = 'device_id';
   static const _user = 'cached_user';
+  static const _imunifyCookie = 'imunify_cookie';
 
   String? _accessCache;
   String? _refreshCache;
   String? _scopeCache;
+  String? _imunifyCookieCache;
 
   Future<void> load() async {
     _accessCache = await _s.read(key: _access);
     _refreshCache = await _s.read(key: _refresh);
     _scopeCache = await _s.read(key: _scope);
+    _imunifyCookieCache = await _s.read(key: _imunifyCookie);
+  }
+
+  String? get imunifyCookie => _imunifyCookieCache;
+
+  Future<void> saveImunifyCookie(String cookie) async {
+    _imunifyCookieCache = cookie;
+    await _s.write(key: _imunifyCookie, value: cookie);
   }
 
   String? get accessToken => _accessCache;
+  String? get token => _accessCache;
   String? get refreshToken => _refreshCache;
 
   /// 'app' for users/admins, 'system' for the internal system authority.

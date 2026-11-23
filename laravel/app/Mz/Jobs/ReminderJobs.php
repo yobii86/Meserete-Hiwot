@@ -158,7 +158,11 @@ final class ReminderJobs
         if ($hour < self::INTERVAL_HOURS[0] || $hour >= self::INTERVAL_HOURS[1]) return 0;
         $today = $local->format('Y-m-d');
         $rows = DB::table('programs as p')->leftJoin('program_categories as pc', 'pc.id', '=', 'p.category_id')
-            ->where('p.status', 'published')->where('p.reminder_interval_days', '>', 0)->whereNotNull('p.reminder_interval_start')->where('p.reminder_interval_start', '<=', $today)
+            ->where('p.status', 'published')
+            ->where('p.reminder_enabled', true)
+            ->where('p.reminder_interval_days', '>', 0)
+            ->whereNotNull('p.reminder_interval_start')
+            ->where('p.reminder_interval_start', '<=', $today)
             ->select(array_merge(array_map(fn ($c) => "p.$c", self::PROGRAM_COLS), ['p.reminder_interval_days', 'p.reminder_interval_start', 'p.reminder_body', 'pc.name as type_name']))
             ->get()->all();
         Schedule::loadOverrides($rows);

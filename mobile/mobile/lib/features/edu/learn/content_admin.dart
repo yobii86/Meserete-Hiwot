@@ -38,19 +38,18 @@ class EduContentScreen extends ConsumerWidget {
       return PatternScaffold(appBar: AppBar(title: Text(l.elContentTitle)), body: const _AuthoringList());
     }
     final initialIndex = switch (initialTab?.toLowerCase()) {
-      'subjects' || 'subject' || '1' => 1,
-      'featured' || 'feature' || '2' => 2,
+      'featured' || 'feature' || '1' => 1,
       _ => 0,
     };
     return DefaultTabController(
-      length: 3,
+      length: 2,
       initialIndex: initialIndex,
       child: PatternScaffold(
         appBar: AppBar(
           title: Text(l.elContentTitle),
-          bottom: TabBar(tabs: [Tab(text: l.elCategories), Tab(text: l.elSubjects), Tab(text: l.elFeatured)]),
+          bottom: TabBar(tabs: [Tab(text: l.elSubjects), Tab(text: l.elFeatured)]),
         ),
-        body: const TabBarView(children: [_CategoriesTab(), _SubjectsTab(), _FeaturedTab()]),
+        body: const TabBarView(children: [_SubjectsTab(), _FeaturedTab()]),
       ),
     );
   }
@@ -316,25 +315,12 @@ class _SubjectsTabState extends ConsumerState<_SubjectsTab> {
 
   void _reload() => setState(() => _future = ref.read(eduRepositoryProvider).subjects(all: true));
 
-  Future<void> _create() async {
-    final id = await showModalBottomSheet<int>(
-      context: context,
-      isScrollControlled: true,
-      useRootNavigator: true,
-      builder: (ctx) => Padding(padding: EdgeInsets.only(bottom: MediaQuery.viewInsetsOf(ctx).bottom), child: const SubjectForm()),
-    );
-    if (id == null || !mounted) return;
-    await context.push('/edu/content/subject/$id');
-    _reload();
-  }
-
   @override
   Widget build(BuildContext context) {
     final l = context.l10n;
     final p = context.palette;
     return Scaffold(
       backgroundColor: Colors.transparent,
-      floatingActionButton: FloatingActionButton.extended(heroTag: 'new-subject', onPressed: _create, icon: const Icon(Icons.add_rounded), label: Text(l.elNewSubject)),
       body: FutureBuilder<List<Json>>(
         future: _future,
         builder: (context, snap) {
@@ -417,11 +403,10 @@ class _SubjectFormState extends ConsumerState<SubjectForm> {
   late final _descEn = TextEditingController(text: asStr(widget.subject?['description_en']));
   late final _objectives = TextEditingController(text: asStr(widget.subject?['objectives']));
   late final _objectivesEn = TextEditingController(text: asStr(widget.subject?['objectives_en']));
-  late int? _category = asInt(widget.subject?['category_id']) ?? widget.initialCategoryId;
+  late final int? _category = asInt(widget.subject?['category_id']) ?? widget.initialCategoryId;
   late String _visibility = asStr(widget.subject?['visibility']) ?? 'enrolled';
   late String _status = asStr(widget.subject?['status']) ?? 'draft';
   late bool _sequential = asBool(widget.subject?['sequential']);
-  late final Future<List<Json>> _categories = ref.read(eduRepositoryProvider).categories(all: true);
 
   @override
   void dispose() {
@@ -504,20 +489,6 @@ class _SubjectFormState extends ConsumerState<SubjectForm> {
           TextField(controller: _name, decoration: InputDecoration(labelText: '${l.elNameAmharic} *')),
           const SizedBox(height: 10),
           TextField(controller: _nameEn, decoration: InputDecoration(labelText: l.elNameEnglish)),
-          const SizedBox(height: 10),
-          FutureBuilder<List<Json>>(
-            future: _categories,
-            builder: (context, snap) => DropdownButtonFormField<int?>(
-              initialValue: (snap.data ?? const []).any((c) => asInt(c['id']) == _category) ? _category : null,
-              isExpanded: true,
-              decoration: InputDecoration(labelText: l.elCategory),
-              items: [
-                DropdownMenuItem<int?>(value: null, child: Text(l.elNoCategory)),
-                for (final c in snap.data ?? const <Json>[]) DropdownMenuItem<int?>(value: asInt(c['id']), child: Text(eduNames(context, c).title)),
-              ],
-              onChanged: (v) => setState(() => _category = v),
-            ),
-          ),
           const SizedBox(height: 10),
           TextField(controller: _code, decoration: InputDecoration(labelText: l.elCode)),
           const SizedBox(height: 10),

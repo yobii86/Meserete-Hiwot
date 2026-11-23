@@ -20,9 +20,38 @@ mobile/mobile/android/captures/
 *.apk
 *.aab
 
-# Python scratch caches
+# Python scratch caches & test scripts
 __pycache__/
 *.py[cod]
+scratch/
+mobile/mobile/scratch/
+test_*.py
+search_*.py
+verify_*.py
+check_*.py
+generate_*.py
+inspect_*.py
+inspect_*.php
+dump_*.py
+build_presentation_base.py
+remote_exec.py
+query_diagnostic_reports.py
+*.docx
+project.zip
+output.bin
+pdf_slice.bin
+pdf_headers.txt
+inspect_output.txt
+headers.txt
 
+# Laravel storage & cache
 .phpunit.result.cache
 *.cache
+laravel/storage/framework/cache/*
+laravel/storage/framework/sessions/*
+laravel/storage/framework/views/*
+laravel/storage/logs/*
+laravel/storage/mz/private/signatures/*
+laravel/storage/mz/private/receipts/*
+laravel/storage/mz/public/images/*
+laravel/storage/mz/public/magazines/*

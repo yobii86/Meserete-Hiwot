@@ -2,7 +2,7 @@ name: mezmur_zelideta
 description: "Mezmur Zelideta — መዝሙር ዘልደታ. Mezmur lyrics, audio, programs and library for Meserete Hiwot Sunday School."
 publish_to: 'none'
 
-version: 1.5.3+27
+version: 1.5.3+38
 
 environment:
   sdk: ^3.12.1
@@ -50,6 +50,7 @@ dependencies:
   signature: ^6.4.0
   share_plus: ^13.3.0
   image_picker: ^1.2.3
+  image: ^4.1.2
   file_picker: ^13.1.0
   url_launcher: ^6.3.2
   package_info_plus: ^10.2.1
@@ -102,8 +103,9 @@ flutter:
 flutter_launcher_icons:
   android: true
   ios: true
-  image_path: "assets/images/logo.png"
+  image_path: "assets/launcher/logo.png"
   remove_alpha_ios: false
   adaptive_icon_background: "#00000000"
-  adaptive_icon_foreground: "assets/images/logo.png"
+  adaptive_icon_foreground: "assets/launcher/logo.png"
   adaptive_icon_foreground_inset: 18
+

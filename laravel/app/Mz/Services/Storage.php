@@ -40,6 +40,8 @@ final class Storage
         'RECEIPTS' => 'receipts',
         'CONTRIBUTION_RECEIPTS' => 'receipts/contributions',
         'DIAGNOSTICS' => 'diagnostics',
+        'MAGAZINES' => 'magazines',
+        'MAGAZINE_COVERS' => 'images/magazines',
     ];
 
     private const AUDIO_EXTS = ['mp3', 'm4a', 'aac', 'ogg', 'opus', 'oga', 'wav', 'flac', 'amr', 'aif', 'aiff', 'ape', 'wv', 'mpc', 'asf', 'mp4', 'm4b', '3gp', '3g2', 'webm', 'mka', 'mkv', 'mid', 'qcp', 'ac3', 'dsf'];
@@ -61,9 +63,11 @@ final class Storage
             // lesson download them). Video is linked, not uploaded; audio keeps the audio size limit.
             'lesson' => ['exts' => ['pdf', 'jpg', 'png', 'webp', 'gif', 'docx', 'pptx', 'xlsx'], 'audio' => true, 'max' => $c['max_audio_bytes'], 'visibility' => 'private'],
             'apk' => ['exts' => ['apk'], 'max' => $c['max_apk_bytes'], 'visibility' => 'private'],
-            'receipt' => ['exts' => ['jpg', 'png', 'webp', 'pdf'], 'max' => $c['max_document_bytes'] ?? 10 * 1024 * 1024, 'visibility' => 'private'],
-            'contribution_receipt' => ['exts' => ['jpg', 'png', 'webp', 'pdf'], 'max' => $c['max_image_bytes'] ?? 10 * 1024 * 1024, 'visibility' => 'private'],
+            'receipt' => ['exts' => ['jpg', 'png', 'webp', 'pdf'], 'max' => $c['max_document_bytes'] ?? 20 * 1024 * 1024, 'visibility' => 'private'],
+            'contribution_receipt' => ['exts' => ['jpg', 'png', 'webp', 'pdf'], 'max' => $c['max_document_bytes'] ?? 20 * 1024 * 1024, 'visibility' => 'private'],
             'diagnostic' => ['exts' => ['jpg', 'png', 'webp'], 'max' => $c['max_image_bytes'] ?? 5 * 1024 * 1024, 'visibility' => 'private'],
+            'assignment' => ['exts' => ['pdf', 'jpg', 'png', 'webp', 'gif', 'docx', 'pptx', 'xlsx'], 'audio' => true, 'max' => $c['max_document_bytes'] ?? 20 * 1024 * 1024, 'visibility' => 'private'],
+            'submission' => ['exts' => ['pdf', 'jpg', 'png', 'webp', 'gif', 'docx', 'pptx', 'xlsx'], 'audio' => true, 'max' => $c['max_document_bytes'] ?? 20 * 1024 * 1024, 'visibility' => 'private'],
         ];
     }
 
@@ -81,7 +85,7 @@ final class Storage
     }
 
     /** "public/…" or "private/…" → the absolute path inside that visibility's root (no escaping it). */
-    private static function resolveInside(string $rel): string
+    public static function resolveInside(string $rel): string
     {
         $rel = ltrim(str_replace('\\', '/', $rel), '/');
         [$visibility, $rest] = array_pad(explode('/', $rel, 2), 2, '');
@@ -229,7 +233,44 @@ final class Storage
             if (! $ok) {
                 throw ApiError::badRequest('INVALID_FILE_TYPE', 'File type not allowed');
             }
-            $rel = $policy['visibility'] . '/' . $folder . '/' . Crypto::uuid() . '.' . $det[0];
+            $ext = $det[0];
+            $mime = $det[1];
+            $uuid = Crypto::uuid();
+            $visibility = $policy['visibility'];
+
+            // Auto-convert eligible images (jpg, png) to WebP
+            $isImage = ($kind === 'image' || in_array($ext, ['jpg', 'jpeg', 'png'], true)) && $kind !== 'signature';
+            if ($isImage && $ext !== 'webp') {
+                $webpRel = $visibility . '/' . $folder . '/' . $uuid . '.webp';
+                $webpAbs = self::resolveInside($webpRel);
+                $res = MediaProcessing::convertToWebp($src, $webpAbs);
+                if ($res['success']) {
+                    return [
+                        'path' => $webpRel,
+                        'mime' => 'image/webp',
+                        'size' => $res['size'],
+                        'sha256' => hash_file('sha256', $webpAbs),
+                    ];
+                }
+            }
+
+            // Auto-convert uncompressed audio (wav, aiff) to standard MP3 (128k) to conserve storage
+            $isAudio = (! empty($policy['audio']) || $kind === 'audio' || in_array($ext, self::AUDIO_EXTS, true) || str_starts_with($mime, 'audio/'));
+            if ($isAudio && in_array($ext, ['wav', 'aif', 'aiff'], true)) {
+                $mp3Rel = $visibility . '/' . $folder . '/' . $uuid . '.mp3';
+                $mp3Abs = self::resolveInside($mp3Rel);
+                $res = MediaProcessing::convertToMp3($src, $mp3Abs, 128);
+                if ($res['success']) {
+                    return [
+                        'path' => $mp3Rel,
+                        'mime' => 'audio/mpeg',
+                        'size' => $res['size'],
+                        'sha256' => hash_file('sha256', $mp3Abs),
+                    ];
+                }
+            }
+
+            $rel = $visibility . '/' . $folder . '/' . $uuid . '.' . $ext;
             $abs = self::resolveInside($rel);
             if (! is_dir(dirname($abs))) {
                 mkdir(dirname($abs), 0775, true);
@@ -237,7 +278,7 @@ final class Storage
             if (! copy($src, $abs)) {
                 throw new \RuntimeException('could not store upload');
             }
-            return ['path' => $rel, 'mime' => $det[1], 'size' => $size, 'sha256' => hash_file('sha256', $abs)];
+            return ['path' => $rel, 'mime' => $mime, 'size' => $size, 'sha256' => hash_file('sha256', $abs)];
         } finally {
             if ($tmp) {
                 @unlink($tmp);
@@ -266,7 +307,11 @@ final class Storage
 
     public static function publicPath(string $rel): string
     {
-        return self::resolveInside('public/' . ltrim($rel, '/'));
+        $rel = ltrim($rel, '/');
+        if (str_starts_with($rel, 'public/')) {
+            return self::resolveInside($rel);
+        }
+        return self::resolveInside('public/' . $rel);
     }
 
     /** Absolute URL of a public file, or null. */

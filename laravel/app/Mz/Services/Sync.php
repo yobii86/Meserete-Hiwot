@@ -114,13 +114,22 @@ final class Sync
                     // Older apps marked "present" for many at once; each member now needs their own
                     // signed record, so each one is tried alone and what cannot be applied goes to HR.
                     $out = [];
-                    foreach (array_values(array_unique($p['user_ids'])) as $memberId) {
+                    $members = array_values(array_unique($p['user_ids']));
+                    $batchTotal = count($members);
+                    foreach ($members as $memberId) {
                         $h = md5($op['op_id'] . ':' . $memberId);
                         $one = ['op_id' => substr($h, 0, 8) . '-' . substr($h, 8, 4) . '-4' . substr($h, 13, 3) . '-a' . substr($h, 17, 3) . '-' . substr($h, 20, 12)] + $op;
-                        $out[$memberId] = self::recordOp($ctx, $one, ['user_id' => $memberId, 'status' => 'present', 'captured_offline' => true] + $p);
+                        $out[$memberId] = self::recordOp($ctx, $one, [
+                            'user_id' => $memberId,
+                            'status' => 'present',
+                            'captured_offline' => true,
+                            'batch_id' => $op['op_id'],
+                            'batch_type' => 'attendance.bulk',
+                            'batch_total' => $batchTotal,
+                        ] + $p);
                     }
                     $conflicts = array_filter($out, fn ($r) => ! empty($r['conflict']));
-                    return ['changed' => count($conflicts) < count($out), 'server' => ['members' => $out, 'sent_to_hr' => count($conflicts)]];
+                    return ['changed' => count($conflicts) < count($out), 'server' => ['batch_id' => $op['op_id'], 'members' => $out, 'sent_to_hr' => count($conflicts)]];
                 }
                 $in = ['target' => ['user_ids' => $p['user_ids']], 'status' => $p['status'], 'date' => $p['date']];
                 if (isset($p['notes'])) $in['notes'] = $p['notes'];
@@ -223,6 +232,16 @@ final class Sync
                 'audio_position_ms' => Z::number()->int()->min(0)->default(0),
             ]), function ($uid, $p) {
                 return ['changed' => true, 'server' => Library::saveProgress($uid, $p['item_id'], $p)];
+            }],
+            'library.favorite.add' => [Z::object(['item_id' => self::posId()]), function ($uid, $p) {
+                return ['changed' => true, 'server' => Library::favorite($uid, $p['item_id'], true)];
+            }],
+            'library.favorite.remove' => [Z::object(['item_id' => self::posId()]), function ($uid, $p, $op) {
+                $fav = DB::table('library_favorites')->where(['user_id' => $uid, 'item_id' => $p['item_id']])->first(['created_at']);
+                if ($fav && ! empty($op['client_ts']) && Dates::of($fav->created_at) > Dates::of($op['client_ts'])) {
+                    return ['conflict' => true, 'server' => ['is_favorite' => true]];
+                }
+                return ['changed' => true, 'server' => Library::favorite($uid, $p['item_id'], false)];
             }],
             'library.checkout' => [Z::object([
                 'copy_code' => Z::string(),
@@ -344,9 +363,10 @@ final class Sync
             $cid = AttendanceSessions::recordConflict([
                 'kind' => 'record', 'code' => self::errorCode($e), 'program_id' => $p['program_id'], 'date' => $p['date'], 'user_id' => $p['user_id'],
                 'submitted_by' => $ctx['auth']->id, 'client_event_id' => $op['op_id'], 'client_captured_at' => $raw, 'captured_at' => $at,
-                'payload' => array_intersect_key($p, array_flip(['status', 'notes', 'via', 'session_uuid'])), 'signature' => $p['signature'] ?? null,
+                'batch_id' => $p['batch_id'] ?? null,
+                'payload' => array_intersect_key($p, array_flip(['status', 'notes', 'via', 'session_uuid', 'batch_id', 'batch_type', 'batch_total'])), 'signature' => $p['signature'] ?? null,
             ]);
-            return ['conflict' => true, 'server' => ['conflict_id' => $cid, 'code' => self::errorCode($e), 'sent_to_hr' => true]];
+            return ['conflict' => true, 'server' => ['conflict_id' => $cid, 'code' => self::errorCode($e), 'batch_id' => $p['batch_id'] ?? null, 'sent_to_hr' => true]];
         }
     }
 

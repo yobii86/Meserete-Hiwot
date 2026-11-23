@@ -1,3 +1,4 @@
+// ignore_for_file: use_null_aware_elements
 import 'dart:typed_data';
 
 import '../core/network/api_client.dart';
@@ -21,6 +22,10 @@ class LibraryRepository {
     String? category,
     int? categoryId,
     bool? favoritesOnly,
+    String? language,
+    bool? availableOnly,
+    String? status,
+    bool? includeDrafts,
     int page = 1,
   }) =>
       _api.getPage(
@@ -33,22 +38,59 @@ class LibraryRepository {
           'q': q,
           'category': category,
           'category_id': categoryId,
+          if (language != null && language != 'all') 'language': language,
+          if (availableOnly == true) 'available_only': 'true',
+          if (favoritesOnly == true) 'favorites_only': 'true',
           if (favoritesOnly == true) 'favorites': 1,
+          if (status != null) 'status': status,
+          if (includeDrafts == true) 'include_drafts': 'true',
         },
       );
 
   Future<Book> book(int id) => _api.get('/library/books/$id', parse: (d) => Book.fromJson(asJson(d)));
 
-  Future<List<LibraryCategory>> categories({String? domain, bool tree = false}) =>
+  Future<List<LibraryCategory>> categories({String? domain, String? type, bool? onlyActive, bool tree = false}) =>
       _api.get(
         '/library/categories',
-        query: {'domain': domain, if (tree) 'tree': 1},
+        query: {
+          'domain': domain,
+          'type': ?type,
+          if (onlyActive != null) 'only_active': onlyActive ? 1 : 0,
+          if (tree) 'tree': 1,
+        },
         parse: (d) => asJsonList(d).map(LibraryCategory.fromJson).toList(),
       );
 
-  Future<bool> toggleFavorite(int bookId) async {
-    final res = await _api.post<Json>('/library/books/$bookId/favorite', parse: asJson);
-    return res['favorited'] == true;
+  Future<LibraryCategory> saveCategory(Map<String, dynamic> body, {int? id}) => id != null
+      ? _api.put('/library/categories/$id', body: body, parse: (d) => LibraryCategory.fromJson(asJson(d)))
+      : _api.post('/library/categories', body: body, parse: (d) => LibraryCategory.fromJson(asJson(d)));
+
+  Future<void> deleteCategory(int id) => _api.delete<void>('/library/categories/$id');
+
+  Future<bool> toggleFavorite(int bookId, {bool? currentState}) async {
+    final body = currentState != null ? {'is_favorite': !currentState} : null;
+    try {
+      final res = await _api.post<Json>('/library/books/$bookId/favorite', body: body, parse: asJson);
+      return res['is_favorite'] == true || res['favorited'] == true;
+    } catch (e) {
+      if (currentState != null) {
+        final next = !currentState;
+        if (_sync != null) {
+          await _sync.enqueue(
+            next ? SyncOp.libraryFavoriteAdd : SyncOp.libraryFavoriteRemove,
+            {'item_id': bookId},
+          );
+        }
+        return next;
+      }
+      rethrow;
+    }
+  }
+
+  Future<List<int>> getFavoriteBookIds() async {
+    final res = await _api.get<Json>('/library/favorites', query: {'ids_only': 'true'});
+    final list = res['ids'] as List<dynamic>? ?? [];
+    return list.map((e) => asIntOr(e)).toList();
   }
 
   Future<void> saveProgress(
@@ -76,9 +118,14 @@ class LibraryRepository {
   /// A digital book's PDF, in memory (sent with the signed-in user's token). It is kept only
   /// encrypted (see BookVault) and opened in the in-app reader.
   Future<Uint8List> downloadBook(Book b, {void Function(int, int)? onProgress}) {
-    final url = (b.fileUrl != null && b.fileUrl!.isNotEmpty)
+    String url = (b.fileUrl != null && b.fileUrl!.isNotEmpty)
         ? b.fileUrl!
         : '/library/books/${b.id}/file';
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      if (!url.startsWith('/api/v1')) {
+        url = '/api/v1/${url.replaceFirst(RegExp(r"^/+"), "")}';
+      }
+    }
     return _api.downloadBytes(url, onProgress: onProgress);
   }
 
@@ -152,13 +199,64 @@ class LibraryRepository {
     }
   }
 
-  // ---- librarian administration ----
+  // ---- librarian administration & dedicated book management ----
   Future<Paged<BookRequest>> requests({String? status, String? q, int page = 1}) =>
       _api.getPage('/library/requests', BookRequest.fromJson, page: page, query: {'status': status, 'q': q});
   Future<BookRequest> approve(int id, {String? note}) => _api.post('/library/requests/$id/approve', body: {'note': ?note}, parse: (d) => BookRequest.fromJson(asJson(d)));
   Future<BookRequest> reject(int id, String reason) => _api.post('/library/requests/$id/reject', body: {'reason': reason}, parse: (d) => BookRequest.fromJson(asJson(d)));
   Future<BookRequest> handOver(int id, {required String signature, int? loanDays}) =>
       _api.post('/library/requests/$id/issue', body: {'signature': signature, 'loan_days': ?loanDays}, parse: (d) => BookRequest.fromJson(asJson(d)));
+
+  // Dedicated Digital Book management
+  Future<Book> createDigitalBook(Json body) => _api.post('/library/digital-books', body: body, parse: (d) => Book.fromJson(asJson(d)));
+  Future<Book> updateDigitalBook(int id, Json body) => _api.put('/library/digital-books/$id', body: body, parse: (d) => Book.fromJson(asJson(d)));
+  Future<Book> uploadDigitalBookPdf(int id, String path) => _api.upload('/library/digital-books/$id/file', filePath: path, parse: (d) => Book.fromJson(asJson(d)));
+  Future<Book> uploadDigitalBookCover(int id, String path) => _api.upload('/library/digital-books/$id/image', filePath: path, parse: (d) => Book.fromJson(asJson(d)));
+
+  // Dedicated Physical Book management
+  Future<Book> createPhysicalBook(Json body) => _api.post('/library/physical-books', body: body, parse: (d) => Book.fromJson(asJson(d)));
+  Future<Book> updatePhysicalBook(int id, Json body) => _api.put('/library/physical-books/$id', body: body, parse: (d) => Book.fromJson(asJson(d)));
+  Future<Book> uploadPhysicalBookCover(int id, String path) => _api.upload('/library/physical-books/$id/image', filePath: path, parse: (d) => Book.fromJson(asJson(d)));
+  Future<void> deleteBook(int id) => _api.delete<void>('/library/books/$id');
+
+  // Dedicated Physical Copies management
+  Future<Paged<LibraryCopy>> getCopies({int? itemId, String? q, String? status, int page = 1}) =>
+      _api.getPage(
+        '/library/circulation/copies',
+        LibraryCopy.fromJson,
+        page: page,
+        query: {
+          if (itemId != null) 'item_id': itemId,
+          if (q != null && q.isNotEmpty) 'q': q,
+          if (status != null && status.isNotEmpty) 'status': status,
+        },
+      );
+
+  Future<LibraryCopy> addCopy(int itemId, {String? condition, String? location}) =>
+      _api.post(
+        '/library/circulation/copies',
+        body: {
+          'item_id': itemId,
+          if (condition != null) 'condition': condition,
+          if (location != null) 'location': location,
+        },
+        parse: (d) => LibraryCopy.fromJson(asJson(d)),
+      );
+
+  Future<LibraryCopy> updateCopy(int copyId, {String? condition, String? location, String? status}) =>
+      _api.put(
+        '/library/circulation/copies/$copyId',
+        body: {
+          if (condition != null) 'condition': condition,
+          if (location != null) 'location': location,
+          if (status != null) 'status': status,
+        },
+        parse: (d) => LibraryCopy.fromJson(asJson(d)),
+      );
+
+  Future<void> deleteCopy(int copyId) =>
+      _api.delete<void>('/library/circulation/copies/$copyId');
+
   Future<ItemModel> uploadBookPdf(int itemId, String path) => _api.upload('/items/$itemId/file', filePath: path, parse: (d) => ItemModel.fromJson(asJson(d)));
   Future<Json> uploadBookNarration(int itemId, String path) => _api.upload('/library/books/$itemId/narration', filePath: path, parse: asJson);
 

@@ -33,6 +33,10 @@ final class Borrowings
     private static function base(): Builder
     {
         return DB::table('borrowings as b')->join('items as i', 'i.id', '=', 'b.item_id')->join('users as u', 'u.id', '=', 'b.user_id')
+            ->where(function ($w) {
+                $w->whereNull('i.category')->orWhereNotIn('i.category', ['books', 'book', 'መጻሕፍት']);
+            })
+            ->whereNull('i.library_category_id')
             ->leftJoin('borrowing_signatures as s', 's.borrowing_id', '=', 'b.id')
             ->leftJoin('users as iss', 'iss.id', '=', 'b.issued_by')->leftJoin('roles as issr', 'issr.id', '=', 'iss.role_id')
             ->leftJoin('users as rt', 'rt.id', '=', 'b.returned_to')->leftJoin('roles as rtr', 'rtr.id', '=', 'rt.role_id')
@@ -148,12 +152,15 @@ final class Borrowings
     /** @param array<int,int> $needs item_id => quantity */
     private static function lockItems(array $needs): array
     {
-        $items = DB::table('items')->whereIn('id', array_keys($needs))->whereNull('deleted_at')->lockForUpdate()->select('id', 'name', 'status', 'available_quantity', 'condition', 'kind')->get();
+        $items = DB::table('items')->whereIn('id', array_keys($needs))->whereNull('deleted_at')->lockForUpdate()->select('id', 'name', 'status', 'available_quantity', 'condition', 'kind', 'category', 'library_category_id')->get();
         $byId = [];
         foreach ($items as $i) $byId[$i->id] = $i;
         foreach ($needs as $itemId => $qty) {
             $it = $byId[$itemId] ?? null;
             if (! $it) throw ApiError::field('item_id', 'ITEM_NOT_FOUND');
+            if (in_array($it->category ?? '', ['books', 'book', 'መጻሕፍት'], true) || ! empty($it->library_category_id)) {
+                throw ApiError::conflict('ITEM_IS_BOOK', 'Physical books must be borrowed through the Library Circulation system.');
+            }
             if (($it->kind ?? 'physical') === 'digital') throw ApiError::conflict('ITEM_IS_DIGITAL', 'Digital items cannot be borrowed');
             if ($it->status !== 'active') throw ApiError::conflict('ITEM_UNAVAILABLE', 'Item is not available', [['field' => 'item_id', 'code' => 'ITEM_UNAVAILABLE', 'message' => (string) $itemId]]);
             if ($it->available_quantity < $qty) throw ApiError::conflict('INSUFFICIENT_QUANTITY', 'Not enough items available', [['field' => 'quantity', 'code' => 'INSUFFICIENT_QUANTITY', 'message' => "$itemId:{$it->available_quantity}"]]);

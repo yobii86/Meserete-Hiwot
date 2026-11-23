@@ -4,10 +4,10 @@ import 'package:flutter/material.dart';
 /// Maroon + gold on white, with a soft blush and cream for fills.
 abstract final class AppColors {
   // Brand
-  static const maroon = Color(0xFF6E1423);
+  static const maroon = Color(0xFF650D20);
   static const maroonDark = Color(0xFF57101C);
   static const maroonDeep = Color(0xFF28080E); // hero gradients
-  static const gold = Color(0xFFC8961E);
+  static const gold = Color(0xFFC6A044);
   static const goldDark = Color(0xFFB08A1E);
   static const goldMuted = Color(0xFFB09A4A);
   static const goldLight = Color(0xFFE8C368);
@@ -19,7 +19,7 @@ abstract final class AppColors {
   static const eduGold = gold;
   static const eduGoldLight = goldLight;
   static const eduGoldMuted = goldMuted;
-  static const eduCream = Color(0xFFFFF8F0);
+  static const eduCream = Color(0xFFFFF8E9);
   static const eduParchment = Color(0xFFFFFFFF);
 
   // Fills
@@ -112,8 +112,8 @@ class Palette extends ThemeExtension<Palette> {
     muted: AppColors.muted,
     subtle: AppColors.subtle,
     faint: AppColors.faint,
-    patternStroke: Color(0x146E1423), // maroon @ 8%
-    patternDot: Color(0x38C8961E), // gold @ 22%
+    patternStroke: Color(0x14650D20), // burgundy @ 8%
+    patternDot: Color(0x38C6A044), // gold @ 22%
   );
 
   static const dark = Palette(
@@ -132,7 +132,7 @@ class Palette extends ThemeExtension<Palette> {
     subtle: Color(0xFF9E8D90),
     faint: Color(0xFF7A6A6D),
     patternStroke: Color(0x14E7A4B0),
-    patternDot: Color(0x30C8961E),
+    patternDot: Color(0x30C6A044),
   );
 
   @override

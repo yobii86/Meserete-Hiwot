@@ -289,16 +289,69 @@ final class Reports
             ->leftJoin('mezmurs as em', fn ($j) => $j->on('em.id', '=', 'l.entity_id')->where('l.entity_type', '=', 'mezmur'))
             ->leftJoin('programs as ep', fn ($j) => $j->on('ep.id', '=', 'l.entity_id')->where('l.entity_type', '=', 'program'))
             ->leftJoin('categories as ec', fn ($j) => $j->on('ec.id', '=', 'l.entity_id')->where('l.entity_type', '=', 'category'))
+            ->leftJoin('items as ei', fn ($j) => $j->on('ei.id', '=', 'l.entity_id')->whereIn('l.entity_type', ['item', 'book', 'digital_book', 'physical_book']))
+            ->leftJoin('edu_lessons as el', fn ($j) => $j->on('el.id', '=', 'l.entity_id')->whereIn('l.entity_type', ['lesson', 'edu_lesson']))
+            ->leftJoin('edu_lesson_materials as emat', fn ($j) => $j->on('emat.id', '=', 'l.entity_id')->whereIn('l.entity_type', ['material', 'edu_material', 'lesson_material', 'edu_lesson_material']))
+            ->leftJoin('edu_quizzes as eq', fn ($j) => $j->on('eq.id', '=', 'l.entity_id')->whereIn('l.entity_type', ['quiz', 'edu_quiz']))
+            ->leftJoin('edu_magazines as emag', fn ($j) => $j->on('emag.id', '=', 'l.entity_id')->whereIn('l.entity_type', ['magazine', 'edu_magazine']))
+            ->leftJoin('edu_courses as eco', fn ($j) => $j->on('eco.id', '=', 'l.entity_id')->whereIn('l.entity_type', ['course', 'edu_course']))
+            ->leftJoin('edu_classes as ecl', fn ($j) => $j->on('ecl.id', '=', 'l.entity_id')->whereIn('l.entity_type', ['class', 'edu_class']))
             ->select('l.id', 'l.user_id', 'u.full_name as user_name', 'u.phone as user_phone', 'l.action', 'l.entity_type', 'l.entity_id',
-                // Human-readable subject: which Mezmur / program / category the action was about.
-                DB::raw('COALESCE(em.title, ep.title, ec.name) as entity_title'), 'l.metadata', 'l.occurred_at')
+                // Human-readable subject: which Mezmur / program / category / book / lesson / material / quiz / magazine the action was about.
+                DB::raw('COALESCE(em.title, ep.title, ec.name, ei.name, el.title, emat.title, eq.title, emag.title, eco.name, ecl.name) as entity_title'), 'l.metadata', 'l.occurred_at')
             ->orderByDesc('l.occurred_at');
         if (! $auth->isSystem) self::visibleRole($qb);
         if (! empty($f['user_id'])) $qb->where('l.user_id', $f['user_id']);
         if (! empty($f['action'])) $qb->where('l.action', $f['action']);
         if (! empty($f['entity_type'])) $qb->where('l.entity_type', $f['entity_type']);
         if (! empty($f['from'])) $qb->where('l.occurred_at', '>=', Dates::sql($f['from']));
-        if (! empty($f['to'])) $qb->where('l.occurred_at', '<=', Dates::sql($f['to']));
+        if (! empty($f['to'])) {
+            $toStr = is_string($f['to']) ? trim($f['to']) : null;
+            if ($toStr !== null && preg_match('/^\d{4}-\d{2}-\d{2}$/', $toStr)) {
+                $qb->where('l.occurred_at', '<=', Dates::sql($toStr . ' 23:59:59'));
+            } else {
+                $qb->where('l.occurred_at', '<=', Dates::sql($f['to']));
+            }
+        }
+        if (! empty($f['module'])) {
+            $mod = strtolower(trim($f['module']));
+            $qb->where(function ($q) use ($mod) {
+                if ($mod === 'education' || $mod === 'edu') {
+                    $q->whereIn('l.action', ['lesson_view', 'material_open', 'quiz_attempt', 'magazine_view'])
+                        ->orWhere('l.action', 'like', 'edu%')
+                        ->orWhere('l.action', 'like', 'lesson%')
+                        ->orWhere('l.action', 'like', 'quiz%')
+                        ->orWhereIn('l.entity_type', ['edu_lesson', 'lesson', 'edu_material', 'material', 'edu_quiz', 'quiz', 'edu_magazine', 'magazine', 'edu_course', 'course', 'edu_class', 'class']);
+                } elseif ($mod === 'library') {
+                    $q->whereIn('l.action', ['borrow', 'return', 'book_read', 'book_download'])
+                        ->orWhere('l.action', 'like', 'book%')
+                        ->orWhereIn('l.entity_type', ['item', 'book', 'digital_book', 'physical_book', 'borrowing']);
+                } elseif ($mod === 'mezmur') {
+                    $q->whereIn('l.action', ['mezmur_view', 'mezmur_search', 'audio_play', 'audio_complete', 'favorite_add', 'favorite_remove'])
+                        ->orWhere('l.action', 'like', 'mezmur%')
+                        ->orWhere('l.action', 'like', 'audio%')
+                        ->orWhere('l.entity_type', 'mezmur');
+                } elseif ($mod === 'program' || $mod === 'programs') {
+                    $q->whereIn('l.action', ['program_view', 'program_register', 'program_unregister', 'reminder_create', 'reminder_update', 'reminder_delete'])
+                        ->orWhere('l.action', 'like', 'program%')
+                        ->orWhere('l.entity_type', 'program');
+                } elseif ($mod === 'attendance') {
+                    $q->where('l.action', 'attendance')
+                        ->orWhere('l.entity_type', 'attendance');
+                }
+            });
+        }
+        $search = trim((string) ($f['q'] ?? $f['search'] ?? ''));
+        if ($search !== '') {
+            $qb->where(function ($q) use ($search) {
+                $term = "%{$search}%";
+                $q->where('u.full_name', 'like', $term)
+                    ->orWhere('u.phone', 'like', $term)
+                    ->orWhere('l.action', 'like', $term)
+                    ->orWhere('l.entity_type', 'like', $term)
+                    ->orWhere('l.metadata', 'like', $term);
+            });
+        }
         $res = Page::paginate($qb, $page);
         return ['items' => array_map(function ($x) {
             $x->metadata = self::meta($x->metadata);

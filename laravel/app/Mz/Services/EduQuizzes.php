@@ -254,11 +254,19 @@ final class EduQuizzes
         }
         $course = DB::table('edu_courses')->where('id', (int) $q->course_id)->first();
         if (! $course) return false;
+        if (isset($course->status) && $course->status !== 'active') return false;
+        $class = DB::table('edu_classes')->where('id', (int) $course->class_id)->first();
+        if ($class && isset($class->status) && $class->status !== 'active') return false;
         if (Edu::onRoster($course, $auth->id)) return true;
         if (! empty($course->subject_id)) {
             $subject = DB::table('edu_subjects')->where('id', $course->subject_id)->first();
-            if ($subject && ($subject->visibility === 'members' || EduLearning::isEnrolledInSubject($auth->id, (int) $subject->id))) {
-                return true;
+            if ($subject) {
+                if (($subject->visibility ?? 'members') !== 'enrolled') {
+                    return true;
+                }
+                if (EduLearning::isEnrolledInSubject($auth->id, (int) $subject->id)) {
+                    return true;
+                }
             }
         }
         return false;
@@ -283,6 +291,130 @@ final class EduQuizzes
         foreach (['opens_at', 'closes_at', 'results_release_at'] as $k) if (! empty($out[$k])) $out[$k] = Dates::sql(Dates::of($out[$k]));
         if (array_key_exists('shuffle', $out)) $out['shuffle'] = $out['shuffle'] ? 1 : 0;
         return $out;
+    }
+
+    public static function checkPrerequisites(int $id): array
+    {
+        $q = self::quiz($id);
+        $qCount = (int) DB::table('edu_quiz_questions')->where('quiz_id', $id)->count();
+        $hasQuestions = $qCount > 0;
+        $hasCourse = ! empty($q->course_id);
+        $hasAssessment = ! empty($q->assessment_id);
+        $hasSchedule = ! empty($q->opens_at) && ! empty($q->closes_at) && Dates::sql($q->closes_at) > Dates::sql($q->opens_at);
+        $hasTimeLimit = ($q->time_limit_minutes ?? 0) > 0;
+
+        $items = [
+            [
+                'key' => 'questions',
+                'label' => 'Questions added (ቢያንስ አንድ ጥያቄ)',
+                'satisfied' => $hasQuestions,
+                'detail' => $hasQuestions ? "{$qCount} questions ready" : 'Add at least one question before publishing',
+            ],
+            [
+                'key' => 'course',
+                'label' => 'Class Course assigned (ክፍል እና ኮርስ)',
+                'satisfied' => $hasCourse,
+                'detail' => $hasCourse ? 'Assigned to course' : 'Must belong to an active class course',
+            ],
+            [
+                'key' => 'assessment',
+                'label' => 'Assessment linked (የውጤት መዝገብ/አሰስመንት)',
+                'satisfied' => $hasAssessment,
+                'detail' => $hasAssessment ? 'Linked to official course assessment' : 'Must link to an assessment so marks flow to report cards',
+            ],
+            [
+                'key' => 'schedule',
+                'label' => 'Schedule configured (የፈተና መክፈቻና መዝጊያ ቀን)',
+                'satisfied' => $hasSchedule,
+                'detail' => $hasSchedule ? "Opens: {$q->opens_at}, Closes: {$q->closes_at}" : 'Set start date and closing date (closing must be after start)',
+            ],
+            [
+                'key' => 'time_limit',
+                'label' => 'Time limit set (የፈተናው የጊዜ ገደብ)',
+                'satisfied' => $hasTimeLimit,
+                'detail' => $hasTimeLimit ? "{$q->time_limit_minutes} minutes" : 'Set duration in minutes (e.g. 60 mins)',
+            ],
+        ];
+
+        $canPublish = $hasQuestions && $hasCourse && ($q->kind !== 'exam' || ($hasAssessment && $hasSchedule && $hasTimeLimit));
+
+        return [
+            'quiz_id' => $id,
+            'kind' => $q->kind ?? 'quiz',
+            'status' => $q->status,
+            'can_publish' => $canPublish,
+            'prerequisites' => $items,
+        ];
+    }
+
+    public static function allAdminQuizzes(AuthContext $auth, array $params = []): array
+    {
+        $isMod = Edu::isModerator($auth) || \App\Mz\Http\ModuleGate::allows($auth, 'education');
+        $subjectId = ! empty($params['subject_id']) ? (int) $params['subject_id'] : null;
+        $status = ! empty($params['status']) && $params['status'] !== 'all' ? (string) $params['status'] : null;
+        $kind = ! empty($params['kind']) ? (string) $params['kind'] : null;
+
+        $q = self::quizQuery();
+
+        if (! $isMod) {
+            $teachingIds = EduTeachers::myCourseIds($auth->id);
+            $q->where(function ($w) use ($auth, $teachingIds) {
+                $w->whereIn('q.course_id', $teachingIds ?: [0])
+                  ->orWhere('q.created_by', $auth->id)
+                  ->orWhereExists(function ($sub) use ($auth) {
+                      $sub->select(DB::raw(1))
+                          ->from('edu_courses as co')
+                          ->join('edu_course_teachers as ct', 'ct.course_id', '=', 'co.id')
+                          ->whereColumn('co.id', 'q.course_id')
+                          ->where('ct.user_id', $auth->id)
+                          ->where('ct.status', 'active');
+                  });
+            });
+        }
+
+        if ($subjectId) {
+            $q->where('co.subject_id', $subjectId);
+        }
+
+        if ($status) {
+            $q->where('q.status', $status);
+        }
+
+        if ($kind) {
+            $q->where('q.kind', $kind);
+        }
+
+        $quizzes = $q->orderByDesc('q.id')->limit(200)->get();
+
+        // High performance single batch count query
+        $quizIds = $quizzes->pluck('id')->all();
+        $attemptsCounts = [];
+        $needsGradingCounts = [];
+
+        if (! empty($quizIds)) {
+            $attemptsCounts = DB::table('edu_quiz_attempts')
+                ->whereIn('quiz_id', $quizIds)
+                ->where('status', '<>', 'in_progress')
+                ->groupBy('quiz_id')
+                ->selectRaw('quiz_id, COUNT(*) as cnt')
+                ->pluck('cnt', 'quiz_id')
+                ->all();
+
+            $needsGradingCounts = DB::table('edu_quiz_attempts')
+                ->whereIn('quiz_id', $quizIds)
+                ->where('needs_grading', 1)
+                ->groupBy('quiz_id')
+                ->selectRaw('quiz_id, COUNT(*) as cnt')
+                ->pluck('cnt', 'quiz_id')
+                ->all();
+        }
+
+        return $quizzes->map(function ($row) use ($attemptsCounts, $needsGradingCounts) {
+            $data = self::serializeQuiz($row);
+            $data['attempts'] = (int) ($attemptsCounts[$row->id] ?? 0);
+            $data['needs_grading'] = (int) ($needsGradingCounts[$row->id] ?? 0);
+            return $data;
+        })->all();
     }
 
     public static function create(array $actx, int $courseId, array $in): array
@@ -323,9 +455,22 @@ final class EduQuizzes
         }
         $patch = self::fields($in);
         $publishing = ($patch['status'] ?? null) === 'published' && $q->status === 'draft';
-        if ($publishing && ! DB::table('edu_quiz_questions')->where('quiz_id', $id)->exists()) throw ApiError::conflict('QUIZ_EMPTY', 'Add questions before publishing');
         if (($patch['status'] ?? null) === 'draft' && $taken) throw ApiError::conflict('QUIZ_HAS_ATTEMPTS', 'Students already took this quiz');
         if ($patch) DB::table('edu_quizzes')->where('id', $id)->update($patch);
+        if ($publishing) {
+            if (! DB::table('edu_quiz_questions')->where('quiz_id', $id)->exists()) {
+                DB::table('edu_quizzes')->where('id', $id)->update(['status' => 'draft']);
+                throw ApiError::conflict('QUIZ_EMPTY', 'Add questions before publishing (ፈተናውን ከማሳተምዎ በፊት ቢያንስ አንድ ጥያቄ ያክሉ)');
+            }
+            if ($kind === 'exam') {
+                $prereqs = self::checkPrerequisites($id);
+                if (! $prereqs['can_publish']) {
+                    $missing = array_map(fn ($it) => $it['label'], array_filter($prereqs['prerequisites'], fn ($it) => ! $it['satisfied']));
+                    DB::table('edu_quizzes')->where('id', $id)->update(['status' => 'draft']);
+                    throw ApiError::conflict('EXAM_PREREQUISITE_FAILED', 'Cannot publish closing exam. Missing: ' . implode(', ', $missing));
+                }
+            }
+        }
         Audit::log($actx, Audit::EDU_UPDATE, 'edu_quiz', $id, ['fields' => array_keys($patch)]);
         if ($publishing) self::notifyPublished(self::quiz($id), $auth->id);
         return self::teacherQuiz($auth, $id);
@@ -349,6 +494,7 @@ final class EduQuizzes
         return self::serializeQuiz($row) + [
             'has_attempts' => DB::table('edu_quiz_attempts')->where('quiz_id', $id)->exists(),
             'can_edit' => true,
+            'prerequisites' => self::checkPrerequisites($id),
             'questions' => DB::table('edu_quiz_questions')->where('quiz_id', $id)->orderBy('sort_order')->orderBy('id')->get()->map(fn ($x) => [
                 'id' => (int) $x->id, 'type' => $x->type, 'prompt' => $x->prompt, 'prompt_en' => $x->prompt_en ?? null, 'options' => self::decode($x->options) ?? [],
                 'answer' => self::decode($x->answer), 'explanation' => $x->explanation, 'explanation_en' => $x->explanation_en ?? null, 'points' => Num::n($x->points), 'sort_order' => (int) $x->sort_order,
@@ -610,11 +756,17 @@ final class EduQuizzes
             $chosen = self::chosen($q, $done);
             $inProgress = current(array_filter($mine, fn ($a) => $a->status === 'in_progress')) ?: null;
             $visible = $chosen && self::scoreVisible($q, $chosen, $auth->id);
+            $myMaxScore = null;
+            if ($visible && $chosen) {
+                $qids = ! empty($chosen->question_ids) ? (is_array($chosen->question_ids) ? $chosen->question_ids : json_decode($chosen->question_ids, true)) : [];
+                $qCount = is_array($qids) && ! empty($qids) ? count($qids) : (int) DB::table('edu_quiz_questions')->where('quiz_id', $q->id)->count();
+                $myMaxScore = Num::n($chosen->max_score ?: ($qCount > 0 ? $qCount : 100));
+            }
             return self::serializeQuiz($q) + [
                 'attempts_used' => count($mine), 'attempts_left' => max(0, (int) $q->max_attempts - count($mine)),
                 'in_progress_attempt_id' => $inProgress ? (int) $inProgress->id : null,
                 'last_attempt_id' => $mine ? (int) end($mine)->id : null,
-                'my_score' => $visible ? self::total($chosen) : null, 'my_max_score' => $visible ? Num::n($chosen->max_score) : null,
+                'my_score' => $visible ? self::total($chosen) : null, 'my_max_score' => $myMaxScore,
                 'score_hidden' => $chosen !== null && ! $visible,
                 'official' => $q->assessment_id !== null,
                 'needs_grading' => $chosen ? (bool) $chosen->needs_grading : false,
@@ -694,6 +846,9 @@ final class EduQuizzes
                 'question_ids' => $questionIdsJson,
             ]);
         });
+        if ($auth->accountType === 'user') {
+            Activity::track($auth->id, Activity::QUIZ_ATTEMPT, 'edu_quiz', $id, ['title' => $q->title, 'attempt_id' => $attemptId]);
+        }
         return self::studentAttempt($auth, $attemptId);
     }
 
@@ -762,6 +917,8 @@ final class EduQuizzes
         if ($att && ($att->needs_grading || $att->status === 'pending_grading')) {
             Notifications::notifyEduQuizSubmitted((int) $att->quiz_id, $attemptId, $auth->id);
         }
+
+        EduDashboard::invalidateUserDashboard($auth->id);
 
         return self::studentAttempt($auth, $attemptId);
     }
@@ -960,14 +1117,30 @@ final class EduQuizzes
         $finished = $a->status !== 'in_progress';
         $showScore = $teacher || self::scoreVisible($q, $a, (int) ($userId ?? $a->user_id));
         $now = self::now();
+
+        $totalQuestions = count($questions);
+        $correctCount = 0;
+        foreach ($questions as $x) {
+            $ans = $answers->get($x->id);
+            if ($ans && (int) $ans->is_correct === 1) {
+                $correctCount++;
+            }
+        }
+        $scoreVal = $finished && $showScore ? self::total($a) : null;
+        $maxScoreVal = Num::n($a->max_score ?: ($totalQuestions > 0 ? $totalQuestions : 100));
+        $percentVal = ($scoreVal !== null && $maxScoreVal > 0) ? round(((float)$scoreVal / (float)$maxScoreVal) * 100, 2) : null;
+
         return [
             'id' => (int) $a->id, 'quiz_id' => (int) $q->id, 'attempt_no' => (int) $a->attempt_no, 'status' => $a->status,
             'started_at' => $a->started_at, 'expires_at' => $a->expires_at, 'submitted_at' => $a->submitted_at,
             'seconds_left' => ! $finished && $a->expires_at ? max(0, Dates::of($a->expires_at)->getTimestamp() - Dates::of($now)->getTimestamp()) : null,
             'server_time' => $now,
             'quiz' => ['id' => (int) $q->id, 'title' => $q->title, 'title_en' => $q->title_en ?? null, 'instructions' => $q->instructions, 'instructions_en' => $q->instructions_en ?? null, 'review_policy' => $q->review_policy, 'official' => $q->assessment_id !== null, 'max_attempts' => (int) $q->max_attempts],
-            'score' => $finished && $showScore ? self::total($a) : null,
-            'max_score' => Num::n($a->max_score),
+            'score' => $scoreVal,
+            'max_score' => $maxScoreVal,
+            'score_percent' => $percentVal,
+            'correct_answers' => $correctCount,
+            'total_questions' => $totalQuestions,
             'score_hidden' => $finished && ! $showScore,
             'needs_grading' => (bool) $a->needs_grading,
             'answers_visible' => $reveal,

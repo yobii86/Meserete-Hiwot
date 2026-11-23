@@ -8,6 +8,7 @@ use App\Mz\Db\UtcDateTime;
 use App\Mz\Notifications\Notifications;
 use App\Mz\Support\ApiError;
 use App\Mz\Support\Dates;
+use App\Mz\Support\EthiopianCalendar;
 use App\Mz\Support\Num;
 use App\Mz\Support\Page;
 use App\Mz\Support\T;
@@ -42,7 +43,7 @@ final class Attendance
     public static function resolveOccurrence(object $p, ?string $date, ?\DateTimeInterface $now = null): ?array
     {
         if ($date) {
-            $o = Schedule::on($p, $date);
+            $o = Schedule::on($p, $date, null, true);
             if (! $o) throw ApiError::field('date', 'NOT_AN_OCCURRENCE');
             return $o;
         }
@@ -110,8 +111,18 @@ final class Attendance
             && DB::table('program_edu_classes')->where('program_id', $programId)->exists();
     }
 
-    private static function expectedMembers(object $p, string $occurrenceDate): Builder
+    public static function isEducationProgram(object|int $program): bool
     {
+        $id = is_object($program) ? $program->id : $program;
+        if (self::hasLinkedClasses($id)) return true;
+        $catId = is_object($program) ? ($program->category_id ?? null) : DB::table('programs')->where('id', $id)->value('category_id');
+        if (! $catId || ! Schema::hasTable('program_categories') || ! Schema::hasColumn('program_categories', 'is_education')) return false;
+        return (bool) DB::table('program_categories')->where('id', $catId)->value('is_education');
+    }
+
+    public static function expectedMembers(object $p, string $occurrenceDate = ''): Builder
+    {
+        $occurrenceDate = $occurrenceDate ?: Dates::todayLocal();
         if (self::hasLinkedClasses($p->id)) {
             $classIds = DB::table('program_edu_classes')->where('program_id', $p->id)->pluck('class_id')->all();
             $q = MemberIds::memberAccounts(DB::table('users as u'))
@@ -162,6 +173,11 @@ final class Attendance
             return $q;
         }
 
+        // Education programs without linked classes should never leak general church members
+        if (self::isEducationProgram($p)) {
+            return MemberIds::memberAccounts(DB::table('users as u'))->whereRaw('0 = 1');
+        }
+
         $q = MemberIds::memberAccounts(DB::table('users as u'))->where(['u.status' => 'active', 'u.membership_status' => 'active']);
         self::inGroups($q, $p);
         if ($p->audience === 'participants') {
@@ -178,6 +194,80 @@ final class Attendance
         if (! self::expectedMembers($p, $date)->where('u.id', $userId)->exists()) {
             throw ApiError::conflict('MEMBER_NOT_EXPECTED', 'This member is not expected at this program');
         }
+    }
+
+    /** Direct record entry by HR or manager for any program (including Education). */
+    public static function record(array $actx, array $data): array
+    {
+        /** @var AuthContext $auth */
+        $auth = $actx['auth'];
+        if (! $auth->can('attendance.manage') && ! $auth->can('programs.manage') && ! $auth->isAdmin) {
+            throw ApiError::forbidden('FORBIDDEN', 'Attendance management permission required');
+        }
+
+        $programId = (int) $data['program_id'];
+        $userId = (int) $data['user_id'];
+        $date = $data['date'] ?? Dates::todayLocal();
+        $status = $data['status'] ?? 'present';
+        $punctuality = $data['punctuality'] ?? 'on_time';
+        $note = $data['note'] ?? null;
+        $actorId = $auth->id;
+
+        $p = self::getProgram($programId);
+        Schedule::loadOverrides($p);
+        $o = self::resolveOccurrence($p, $date);
+        if (! empty($o['suspended'])) {
+            throw ApiError::conflict('OCCURRENCE_SUSPENDED', 'This program occurrence has been suspended for ' . $date);
+        }
+        if (! empty($o['cancelled'])) {
+            throw ApiError::conflict('OCCURRENCE_CANCELLED', 'This program occurrence has been cancelled for ' . $date);
+        }
+        self::assertExpected($p, $date, $userId);
+
+        $now = Dates::sql(Dates::now());
+        $existing = DB::table('attendance')->where(['program_id' => $programId, 'user_id' => $userId, 'date' => $date])->first();
+        if ($existing) {
+            DB::table('attendance')->where('id', $existing->id)->update([
+                'status' => $status,
+                'punctuality' => $punctuality,
+                'note' => $note,
+                'recorded_by' => $actorId,
+                'updated_at' => $now,
+            ]);
+            $id = $existing->id;
+        } else {
+            $id = DB::table('attendance')->insertGetId([
+                'program_id' => $programId,
+                'user_id' => $userId,
+                'occurrence_date' => $date,
+                'date' => $date,
+                'status' => $status,
+                'punctuality' => $punctuality,
+                'channel' => 'manual',
+                'recorded_by' => $actorId,
+                'note' => $note,
+                'created_at' => $now,
+                'updated_at' => $now,
+            ]);
+        }
+
+        if (self::hasLinkedClasses($programId) && Schema::hasTable('attendance_edu_classes')) {
+            $classIds = DB::table('program_edu_classes as pc')
+                ->join('edu_enrollments as e', 'e.class_id', '=', 'pc.class_id')
+                ->where('pc.program_id', $programId)
+                ->where('e.user_id', $userId)
+                ->where('e.status', 'active')
+                ->pluck('pc.class_id')
+                ->all();
+            foreach ($classIds as $cid) {
+                DB::table('attendance_edu_classes')->insertOrIgnore([
+                    'attendance_id' => $id,
+                    'class_id' => $cid,
+                ]);
+            }
+        }
+
+        return (array) DB::table('attendance')->where('id', $id)->first();
     }
 
     /** Roster of one occurrence: every expected member (plus anyone marked) with their status. */
@@ -218,6 +308,7 @@ final class Attendance
             $r->legacy_late = $r->status === 'late';
             if ($r->legacy_late) $r->status = 'present';
             $r->signed = (bool) $r->signature_id;
+            $r->signature_url = ($r->signed && $r->attendance_id) ? url("/api/v1/programs/attendance/signatures/{$r->attendance_id}") : null;
             return $r;
         }, MemberIds::decorate($res['items']));
 
@@ -241,7 +332,18 @@ final class Attendance
         return [
             'items' => $items,
             'meta' => $res['meta'] + [
-                'occurrence' => ['date' => $o['date'], 'starts_at' => $o['starts_at'], 'ends_at' => $o['ends_at'], 'active' => self::isActive($o), 'ended' => self::hasEnded($o), 'closed' => $closed, 'rescheduled' => ! empty($o['rescheduled'])],
+                'occurrence' => [
+                    'date' => $o['date'],
+                    'starts_at' => $o['starts_at'],
+                    'ends_at' => $o['ends_at'],
+                    'active' => empty($o['suspended']) && empty($o['cancelled']) && self::isActive($o),
+                    'ended' => self::hasEnded($o),
+                    'closed' => $closed,
+                    'rescheduled' => ! empty($o['rescheduled']),
+                    'cancelled' => ! empty($o['cancelled']),
+                    'suspended' => ! empty($o['suspended']),
+                    'status' => ! empty($o['suspended']) ? 'suspended' : (! empty($o['cancelled']) ? 'cancelled' : ($closed ? 'closed' : 'active')),
+                ],
                 'session' => $session,
                 'signature_policy' => Settings::signaturePolicy(),
                 'summary' => self::summary($programId, $o['date']),
@@ -341,7 +443,9 @@ final class Attendance
         $existing = self::recordOf($programId, $o['date'], $userId);
         $groups = self::groupsOf($p);
         $reason = null;
-        if (! $s->taker_id) $reason = 'NO_ATTENDANCE_TAKERS_ASSIGNED';
+        if (! empty($o['suspended'])) $reason = 'OCCURRENCE_SUSPENDED';
+        elseif (! empty($o['cancelled'])) $reason = 'OCCURRENCE_CANCELLED';
+        elseif (! $s->taker_id) $reason = 'NO_ATTENDANCE_TAKERS_ASSIGNED';
         elseif ((int) $s->taker_id !== $auth->id) $reason = 'NOT_SESSION_TAKER';
         elseif (! $s->started_at) $reason = 'SESSION_NOT_STARTED';
         elseif (! AttendanceSessions::acceptsAt($s, $o, $now)) $reason = 'ATTENDANCE_CLOSED';
@@ -357,7 +461,16 @@ final class Attendance
                 'member_type' => $u->member_type, 'membership_status' => $u->membership_status, 'status' => $u->status,
             ],
             'program' => ['id' => $p->id, 'title' => $p->title, 'member_groups' => $groups],
-            'occurrence' => ['date' => $o['date'], 'starts_at' => $o['starts_at'], 'ends_at' => $o['ends_at'], 'active' => self::isActive($o, $now), 'closed' => self::isClosed($p, $o, $now)],
+            'occurrence' => [
+                'date' => $o['date'],
+                'starts_at' => $o['starts_at'],
+                'ends_at' => $o['ends_at'],
+                'active' => empty($o['suspended']) && empty($o['cancelled']) && self::isActive($o, $now),
+                'closed' => self::isClosed($p, $o, $now),
+                'cancelled' => ! empty($o['cancelled']),
+                'suspended' => ! empty($o['suspended']),
+                'status' => ! empty($o['suspended']) ? 'suspended' : (! empty($o['cancelled']) ? 'cancelled' : 'active'),
+            ],
             'session' => AttendanceSessions::serialize($s, $p, $o, $auth),
             'eligible' => $reason === null,
             'reason' => $reason,
@@ -388,7 +501,16 @@ final class Attendance
         $run = function () use ($actx, $auth, $programId, $userId, $input, $capture, $status, &$notify, &$date, &$duplicate, &$savedSig) {
             $p = self::getProgram($programId);
             $o = self::resolveOccurrence($p, $input['date'] ?? null);
+            if (! empty($o['suspended'])) {
+                throw ApiError::conflict('OCCURRENCE_SUSPENDED', 'This program occurrence has been suspended for ' . $o['date']);
+            }
+            if (! empty($o['cancelled'])) {
+                throw ApiError::conflict('OCCURRENCE_CANCELLED', 'This program occurrence has been cancelled for ' . $o['date']);
+            }
             $date = $o['date'];
+            if ($date < Dates::todayLocal() && empty($capture['allow_past'])) {
+                throw ApiError::conflict('PAST_PROGRAM_ATTENDANCE_BLOCKED', 'Attendance cannot be recorded for past program dates. Submit an attendance correction request instead.');
+            }
             $s = AttendanceSessions::of($p, $o, true);
             self::assertTaker($auth, $s);
             $u = MemberIds::memberAccounts(DB::table('users as u'))->where('u.id', $userId)->first(['u.id', 'u.member_group']);
@@ -444,11 +566,10 @@ final class Attendance
                     ->pluck('pc.class_id')
                     ->all();
                 foreach ($classIds as $cid) {
-                    DB::table('attendance_edu_classes')->upsert(
-                        [['attendance_id' => $r['id'], 'class_id' => $cid]],
-                        ['attendance_id', 'class_id'],
-                        []
-                    );
+                    DB::table('attendance_edu_classes')->insertOrIgnore([
+                        'attendance_id' => $r['id'],
+                        'class_id' => $cid,
+                    ]);
                 }
             }
             Audit::log($actx, Audit::ATTENDANCE_SET, 'attendance', $programId, [
@@ -497,6 +618,9 @@ final class Attendance
         return DB::transaction(function () use ($actx, $auth, $programId, $in, $allowAll, $notes) {
             $p = self::getProgram($programId);
             $o = self::resolveOccurrence($p, $in['date'] ?? null);
+            if ($o['date'] < Dates::todayLocal() && empty($in['allow_past'])) {
+                throw ApiError::conflict('PAST_PROGRAM_ATTENDANCE_BLOCKED', 'Attendance cannot be recorded for past program dates. Submit an attendance correction request instead.');
+            }
             $s = AttendanceSessions::of($p, $o, true);
             self::assertTaker($auth, $s);
             $now = Dates::now();
@@ -753,12 +877,33 @@ final class Attendance
         if (! $programs || $start > $end) return [];
         Schedule::loadOverrides($programs);
         $byKey = [];
-        foreach (DB::table('attendance')->where('user_id', $userId)->whereIn('program_id', array_map(fn ($p) => $p->id, $programs))->whereBetween('occurrence_date', [$start, $end])->select('program_id', 'occurrence_date', 'status', 'attended_at', 'elapsed_seconds')->get() as $m) {
+        $selectCols = ['a.program_id', 'a.occurrence_date', 'a.status', 'a.attended_at', 'a.elapsed_seconds', 'a.recorded_by', 'u.full_name as recorder_name'];
+        if (Schema::hasColumn('attendance', 'notes')) {
+            $selectCols[] = 'a.notes';
+        }
+        if (Schema::hasColumn('attendance', 'signature_id')) {
+            $selectCols[] = 'a.signature_id';
+        }
+        if (Schema::hasColumn('attendance', 'signature_exempt')) {
+            $selectCols[] = 'a.signature_exempt';
+        }
+        $records = DB::table('attendance as a')
+            ->leftJoin('users as u', 'u.id', '=', 'a.recorded_by')
+            ->where('a.user_id', $userId)
+            ->whereIn('a.program_id', array_map(fn ($p) => $p->id, $programs))
+            ->whereBetween('a.occurrence_date', [$start, $end])
+            ->select($selectCols)
+            ->get();
+        foreach ($records as $m) {
             // No late status any more: an old "late" mark counts (and shows) as attended.
             $byKey[$m->program_id . ':' . Dates::toDateOnly($m->occurrence_date)] = [
                 'status' => $m->status === 'late' ? 'present' : $m->status,
                 'attended_at' => $m->attended_at,
                 'elapsed_seconds' => $m->elapsed_seconds !== null ? (int) $m->elapsed_seconds : null,
+                'signature_id' => $m->signature_id ?? null,
+                'signature_exempt' => (bool) ($m->signature_exempt ?? false),
+                'recorder_name' => $m->recorder_name,
+                'notes' => $m->notes ?? null,
             ];
         }
         $out = [];
@@ -777,6 +922,11 @@ final class Attendance
                     'status' => $status,
                     'attended_at' => $mark['attended_at'] ?? null,
                     'elapsed_seconds' => $mark['elapsed_seconds'] ?? null,
+                    'signature_id' => $mark['signature_id'] ?? null,
+                    'signature_exempt' => $mark['signature_exempt'] ?? false,
+                    'signature_status' => ! empty($mark['signature_id']) ? 'verified' : (! empty($mark['signature_exempt']) ? 'exempt' : null),
+                    'recorder_name' => $mark['recorder_name'] ?? null,
+                    'notes' => $mark['notes'] ?? null,
                     'is_additional' => (bool) $p->is_additional,
                     'counts_for_selection' => (bool) $p->counts_for_selection,
                 ];
@@ -846,19 +996,75 @@ final class Attendance
 
     public static function forUser(int $userId, array $page): array
     {
-        $all = array_reverse(array_values(array_filter(self::memberOccurrences($userId), fn ($o) => in_array($o['status'], ['present', 'late', 'excused', 'absent'], true))));
-        $items = array_map(fn ($o) => [
-            'id' => "{$o['program_id']}:{$o['date']}",
-            'status' => $o['status'],
-            'attended_at' => null,
-            'program_id' => $o['program_id'],
-            'program_title' => $o['title'],
-            'starts_at' => $o['starts_at'],
-            'location' => $o['location'],
-            'date' => $o['date'],
-            'category' => $o['category'],
-        ], array_slice($all, $page['offset'], $page['limit']));
-        return ['items' => $items, 'meta' => ['page' => $page['page'], 'limit' => $page['limit'], 'total' => count($all), 'pages' => max(1, (int) ceil(count($all) / $page['limit']))]];
+        $user = DB::table('users')->where('id', $userId)->first(['id', 'full_name', 'member_no', 'member_group']);
+        $userName = $user->full_name ?? '';
+        $memberId = $user ? MemberIds::format($user->member_no, $user->member_group) : '';
+
+        $allOccurrences = self::memberOccurrences($userId);
+        $all = array_reverse(array_values(array_filter($allOccurrences, fn ($o) => in_array($o['status'], ['present', 'late', 'excused', 'absent'], true))));
+
+        // Fetch actual recorded attendance records for this user
+        $realRecordsQuery = DB::table('attendance as a')->where('a.user_id', $userId);
+        $realCols = ['a.id', 'a.program_id', 'a.occurrence_date', 'a.status', 'a.attended_at', 'a.client_captured_at'];
+        if (Schema::hasColumn('attendance', 'signature_id')) {
+            $realCols[] = 'a.signature_id';
+        }
+        if (Schema::hasTable('attendance_signatures')) {
+            $realRecordsQuery->leftJoin('attendance_signatures as sig', 'sig.attendance_id', '=', 'a.id');
+            $realCols[] = 'sig.path as signature_path';
+        }
+        $realRecords = $realRecordsQuery->select($realCols)
+            ->get()
+            ->keyBy(fn ($r) => "{$r->program_id}:" . Dates::toDateOnly($r->occurrence_date));
+
+        $slice = array_slice($all, $page['offset'], $page['limit']);
+
+        $items = array_map(function ($o) use ($realRecords, $userName, $memberId) {
+            $key = "{$o['program_id']}:{$o['date']}";
+            $real = $realRecords->get($key);
+
+            $hasSig = $real && (! empty($real->signature_id) || ! empty($real->signature_path));
+            $attendedAt = $real?->attended_at ?? $real?->client_captured_at;
+            $status = $real?->status ?? $o['status'];
+
+            $ethDate = EthiopianCalendar::gregorianToEthiopianDate($o['date']);
+            $calendarDate = "{$ethDate['month_name_am']} {$ethDate['ethiopian_day']} ቀን {$ethDate['ethiopian_year']} ዓ.ም";
+
+            $sigIndicator = $hasSig ? 'signed' : ($status === 'present' ? 'missing' : 'exempt');
+
+            return [
+                'id' => $real ? (int) $real->id : $key,
+                'status' => $status,
+                'attended_at' => $attendedAt ? Dates::iso($attendedAt) : null,
+                'actual_time' => $attendedAt ? date('H:i:s', strtotime($attendedAt)) : null,
+                'program_id' => (int) $o['program_id'],
+                'program_name' => $o['title'],
+                'program_title' => $o['title'],
+                'member_name' => $userName,
+                'member_id' => $memberId,
+                'calendar_date' => $calendarDate,
+                'ethiopian_date' => $ethDate['ethiopian_date'],
+                'signature_status' => $sigIndicator,
+                'signature_indicator' => $sigIndicator,
+                'has_signature' => $hasSig,
+                'signature_url' => ($real && $hasSig) ? "/api/v1/programs/attendance/signatures/{$real->id}" : null,
+                'starts_at' => $o['starts_at'],
+                'location' => $o['location'],
+                'date' => $o['date'],
+                'occurrence_date' => $o['date'],
+                'category' => $o['category'],
+            ];
+        }, $slice);
+
+        return [
+            'items' => $items,
+            'meta' => [
+                'page' => $page['page'],
+                'limit' => $page['limit'],
+                'total' => count($all),
+                'pages' => max(1, (int) ceil(count($all) / $page['limit'])),
+            ],
+        ];
     }
 
     public static function rateSummary(int $userId, array $f = []): array
@@ -874,5 +1080,714 @@ final class Attendance
             'score' => Num::clean($s['attended'] + $s['late'] + $s['excused'] * $s['excused_weight']),
             'rate' => $s['percentage'],
         ];
+    }
+
+    // ------------------------------------------------------------------ Admin Attendance Management (History & Overview)
+    private static function applyAdminFilters(\Illuminate\Database\Query\Builder $qb, array $f): \Illuminate\Database\Query\Builder
+    {
+        if (! empty($f['from'])) {
+            $qb->where('a.occurrence_date', '>=', Dates::toDateOnly($f['from']));
+        }
+        if (! empty($f['to'])) {
+            $qb->where('a.occurrence_date', '<=', Dates::toDateOnly($f['to']));
+        }
+        if (! empty($f['date'])) {
+            $qb->where('a.occurrence_date', Dates::toDateOnly($f['date']));
+        }
+        if (! empty($f['program_id'])) {
+            $qb->where('a.program_id', (int) $f['program_id']);
+        }
+        if (! empty($f['category_id'])) {
+            $qb->where('p.category_id', (int) $f['category_id']);
+        }
+        if (! empty($f['status'])) {
+            $st = $f['status'];
+            if ($st === 'present') {
+                $qb->whereIn('a.status', ['present', 'late']);
+            } else {
+                $qb->where('a.status', $st);
+            }
+        }
+        if (! empty($f['taker_id'])) {
+            $qb->where('a.recorded_by', (int) $f['taker_id']);
+        }
+        if (! empty($f['class_id']) && Schema::hasTable('attendance_edu_classes')) {
+            $qb->whereExists(fn ($sq) => $sq->select(DB::raw(1))->from('attendance_edu_classes as aec')->whereColumn('aec.attendance_id', 'a.id')->where('aec.class_id', (int) $f['class_id']));
+        }
+        if (! empty($f['q'])) {
+            $q = trim((string) $f['q']);
+            $qb->where(function ($w) use ($q) {
+                $w->where('u.full_name', 'like', "%{$q}%")
+                  ->orWhere('u.phone', 'like', "%{$q}%")
+                  ->orWhere('u.member_no', 'like', "%{$q}%")
+                  ->orWhere('p.title', 'like', "%{$q}%");
+            });
+        }
+        return $qb;
+    }
+
+    public static function adminOverview(array $f): array
+    {
+        $base = DB::table('attendance as a')
+            ->join('programs as p', 'p.id', '=', 'a.program_id')
+            ->join('users as u', 'u.id', '=', 'a.user_id')
+            ->leftJoin('program_categories as pc', 'pc.id', '=', 'p.category_id');
+
+        $filtered = self::applyAdminFilters(clone $base, $f);
+
+        $statusCounts = (clone $filtered)
+            ->selectRaw("a.status, COUNT(*) as cnt")
+            ->groupBy('a.status')
+            ->pluck('cnt', 'status')
+            ->all();
+
+        $present = (int) (($statusCounts['present'] ?? 0) + ($statusCounts['late'] ?? 0));
+        $absent = (int) ($statusCounts['absent'] ?? 0);
+        $excused = (int) ($statusCounts['excused'] ?? 0);
+        $total = $present + $absent + $excused;
+        $rate = $total > 0 ? round(($present / $total) * 100, 1) : 0.0;
+
+        $categories = (clone $filtered)
+            ->whereNotNull('p.category_id')
+            ->groupBy('p.category_id', 'pc.name', 'pc.color')
+            ->selectRaw('p.category_id, COALESCE(pc.name, "Uncategorized") as name, pc.color, COUNT(*) as count')
+            ->orderByDesc('count')
+            ->limit(10)
+            ->get();
+
+        $programs = (clone $filtered)
+            ->groupBy('p.id', 'p.title')
+            ->selectRaw('p.id, p.title, COUNT(*) as count')
+            ->orderByDesc('count')
+            ->limit(10)
+            ->get();
+
+        $takers = (clone $filtered)
+            ->leftJoin('users as t', 't.id', '=', 'a.recorded_by')
+            ->whereNotNull('a.recorded_by')
+            ->groupBy('a.recorded_by', 't.full_name')
+            ->selectRaw('a.recorded_by as id, t.full_name as user_name, COUNT(*) as count')
+            ->orderByDesc('count')
+            ->limit(10)
+            ->get()
+            ->map(fn ($r) => [
+                'id' => (int) $r->id,
+                'name' => ! empty($r->user_name) ? $r->user_name : ('#' . $r->id),
+                'count' => (int) $r->count,
+            ])
+            ->values();
+
+        return [
+            'total_records' => $total,
+            'unique_attendees' => (clone $filtered)->distinct('a.user_id')->count('a.user_id'),
+            'programs_count' => (clone $filtered)->distinct('a.program_id')->count('a.program_id'),
+            'present' => $present,
+            'absent' => $absent,
+            'excused' => $excused,
+            'attendance_rate' => $rate,
+            'categories' => $categories,
+            'programs' => $programs,
+            'takers' => $takers,
+        ];
+    }
+
+    public static function adminRecords(array $f, array $page): array
+    {
+        $qb = DB::table('attendance as a')
+            ->join('programs as p', 'p.id', '=', 'a.program_id')
+            ->join('users as u', 'u.id', '=', 'a.user_id')
+            ->leftJoin('program_categories as pc', 'pc.id', '=', 'p.category_id')
+            ->leftJoin('users as taker', 'taker.id', '=', 'a.recorded_by');
+        $cols = [
+            'a.id',
+            'a.occurrence_date',
+            'a.program_id',
+            'p.title as program_title',
+            'p.category_id',
+            'pc.name as category_name',
+            'pc.color as category_color',
+            'a.user_id',
+            'u.full_name as user_name',
+            'u.member_no',
+            'u.member_group',
+            'u.phone',
+            'u.profile_image',
+            'a.status',
+            'a.attended_at',
+            'a.client_captured_at',
+            'a.elapsed_seconds',
+            'a.recorded_by',
+            'taker.full_name as recorder_name',
+            'a.via',
+        ];
+        if (Schema::hasColumn('attendance', 'notes')) {
+            $cols[] = 'a.notes';
+        }
+        if (Schema::hasColumn('attendance', 'signature_id')) {
+            $cols[] = 'a.signature_id';
+        }
+        if (Schema::hasTable('attendance_signatures')) {
+            $qb->leftJoin('attendance_signatures as sig', 'sig.attendance_id', '=', 'a.id');
+            $cols[] = 'sig.path as signature_path';
+        }
+        $qb->select($cols)
+            ->orderByDesc('a.occurrence_date')
+            ->orderByDesc('a.attended_at')
+            ->orderByDesc('a.id');
+
+        self::applyAdminFilters($qb, $f);
+
+        $res = Page::paginate($qb, $page);
+
+        $items = array_map(function ($r) {
+            $hasSig = ! empty($r->signature_id) || ! empty($r->signature_path);
+            $ethDate = EthiopianCalendar::gregorianToEthiopianDate(Dates::toDateOnly($r->occurrence_date));
+            $calendarDate = "{$ethDate['month_name_am']} {$ethDate['ethiopian_day']} ቀን {$ethDate['ethiopian_year']} ዓ.ም";
+            $sigIndicator = $hasSig ? 'signed' : ($r->status === 'present' ? 'missing' : 'exempt');
+            return [
+                'id' => (int) $r->id,
+                'occurrence_date' => Dates::toDateOnly($r->occurrence_date),
+                'date' => Dates::toDateOnly($r->occurrence_date),
+                'calendar_date' => $calendarDate,
+                'ethiopian_date' => $ethDate['ethiopian_date'],
+                'program_id' => (int) $r->program_id,
+                'program_name' => $r->program_title,
+                'program_title' => $r->program_title,
+                'category_id' => $r->category_id ? (int) $r->category_id : null,
+                'category_name' => $r->category_name,
+                'category_color' => $r->category_color,
+                'user_id' => (int) $r->user_id,
+                'user_name' => $r->user_name,
+                'member_name' => $r->user_name,
+                'member_no' => $r->member_no,
+                'member_id' => MemberIds::format($r->member_no, $r->member_group),
+                'member_group' => $r->member_group,
+                'phone' => $r->phone,
+                'user_photo' => Storage::url($r->profile_image),
+                'status' => $r->status === 'late' ? 'present' : $r->status,
+                'attended_at' => $r->attended_at ? Dates::iso($r->attended_at) : null,
+                'actual_time' => $r->attended_at ? date('H:i:s', strtotime($r->attended_at)) : null,
+                'client_captured_at' => $r->client_captured_at,
+                'elapsed_seconds' => $r->elapsed_seconds !== null ? (int) $r->elapsed_seconds : null,
+                'recorded_by' => $r->recorded_by ? (int) $r->recorded_by : null,
+                'recorder_name' => $r->recorder_name,
+                'via' => $r->via ?? 'manual',
+                'has_signature' => $hasSig,
+                'signature_status' => $sigIndicator,
+                'signature_indicator' => $sigIndicator,
+                'signature_id' => $r->signature_id ? (int) $r->signature_id : null,
+                'signature_url' => $hasSig ? "/api/v1/programs/attendance/signatures/{$r->id}" : null,
+                'notes' => $r->notes,
+            ];
+        }, $res['items']);
+
+        return ['items' => $items, 'meta' => $res['meta']];
+    }
+
+    public static function adminExport(array $f): array
+    {
+        $all = self::adminRecords($f, ['page' => 1, 'limit' => 5000]);
+        return [
+            'exported_at' => Dates::sql(Dates::now()),
+            'filters' => $f,
+            'total' => count($all['items']),
+            'records' => $all['items'],
+        ];
+    }
+
+    /**
+     * Year-wide month-by-month analytics summary for Ethiopian calendar (all 13 months).
+     */
+    public static function yearlySummary(array $f): array
+    {
+        $currentEth = EthiopianCalendar::todayInAddis();
+        $year = (int) ($f['year'] ?? $currentEth['ethiopian_year']);
+        if ($year < 1900 || $year > 2200) {
+            $year = (int) $currentEth['ethiopian_year'];
+        }
+
+        $ethFrom = EthiopianCalendar::toGregorian($year, 1, 1)->format('Y-m-d');
+        $pagumeDays = EthiopianCalendar::daysInMonth($year, 13);
+        $ethTo = EthiopianCalendar::toGregorian($year, 13, $pagumeDays)->format('Y-m-d');
+
+        $base = DB::table('attendance as a')
+            ->join('programs as p', 'p.id', '=', 'a.program_id')
+            ->join('users as u', 'u.id', '=', 'a.user_id')
+            ->whereBetween('a.occurrence_date', [$ethFrom, $ethTo]);
+
+        if (! empty($f['member_group'])) $base->where('u.member_group', $f['member_group']);
+        if (! empty($f['member_type'])) $base->where('u.member_type', $f['member_type']);
+        if (! empty($f['category_id'])) $base->where('p.category_id', (int) $f['category_id']);
+        if (! empty($f['program_id'])) $base->where('p.id', (int) $f['program_id']);
+
+        $records = $base->select('a.occurrence_date', 'a.status', 'a.program_id', 'a.user_id')->get();
+
+        $totalPresent = 0;
+        $totalAbsent = 0;
+        $totalExcused = 0;
+
+        $monthBuckets = [];
+        for ($m = 1; $m <= 13; $m++) {
+            $days = EthiopianCalendar::daysInMonth($year, $m);
+            $mFrom = EthiopianCalendar::toGregorian($year, $m, 1)->format('Y-m-d');
+            $mTo = EthiopianCalendar::toGregorian($year, $m, $days)->format('Y-m-d');
+            $monthBuckets[$m] = [
+                'month' => $m,
+                'month_name_am' => EthiopianCalendar::MONTHS_AM[$m],
+                'month_name_en' => EthiopianCalendar::MONTHS_EN[$m],
+                'from_date' => $mFrom,
+                'to_date' => $mTo,
+                'present' => 0,
+                'absent' => 0,
+                'excused' => 0,
+                'expected' => 0,
+                'attendance_rate' => 0.0,
+                'session_count' => 0,
+                'sessions' => [],
+            ];
+        }
+
+        $sessionsYear = [];
+
+        foreach ($records as $r) {
+            $dateOnly = Dates::toDateOnly($r->occurrence_date);
+            [$gy, $gm, $gd] = array_map('intval', explode('-', substr($dateOnly, 0, 10)));
+            $eth = EthiopianCalendar::fromGregorian($gy, $gm, $gd);
+            $m = (int) $eth['month'];
+            if ($m < 1 || $m > 13) continue;
+
+            $status = $r->status;
+            $isPres = in_array($status, ['present', 'late'], true);
+            $isAbs = $status === 'absent';
+            $isExc = $status === 'excused';
+
+            if ($isPres) {
+                $totalPresent++;
+                $monthBuckets[$m]['present']++;
+            } elseif ($isAbs) {
+                $totalAbsent++;
+                $monthBuckets[$m]['absent']++;
+            } elseif ($isExc) {
+                $totalExcused++;
+                $monthBuckets[$m]['excused']++;
+            }
+
+            $sessKey = "{$r->program_id}:$dateOnly";
+            $sessionsYear[$sessKey] = true;
+            $monthBuckets[$m]['sessions'][$sessKey] = true;
+        }
+
+        $monthlyList = [];
+        foreach ($monthBuckets as $m => $b) {
+            $expected = $b['present'] + $b['absent'] + $b['excused'];
+            $rate = $expected > 0 ? round(($b['present'] / $expected) * 100, 1) : 0.0;
+            $b['expected'] = $expected;
+            $b['attendance_rate'] = $rate;
+            $b['session_count'] = count($b['sessions']);
+            unset($b['sessions']);
+            $monthlyList[] = $b;
+        }
+
+        $totalExpected = $totalPresent + $totalAbsent + $totalExcused;
+        $overallRate = $totalExpected > 0 ? round(($totalPresent / $totalExpected) * 100, 1) : 0.0;
+
+        return [
+            'year' => $year,
+            'gregorian_from' => $ethFrom,
+            'gregorian_to' => $ethTo,
+            'total_present' => $totalPresent,
+            'total_absent' => $totalAbsent,
+            'total_excused' => $totalExcused,
+            'total_expected' => $totalExpected,
+            'attendance_rate' => $overallRate,
+            'total_sessions' => count($sessionsYear),
+            'months' => $monthlyList,
+        ];
+    }
+
+    /**
+     * Single Ethiopian month attendance summary.
+     */
+    public static function monthlySummary(array $f): array
+    {
+        $currentEth = EthiopianCalendar::todayInAddis();
+        $year = (int) ($f['year'] ?? $currentEth['ethiopian_year']);
+        $month = (int) ($f['month'] ?? $currentEth['ethiopian_month']);
+        $month = max(1, min(13, $month));
+
+        $days = EthiopianCalendar::daysInMonth($year, $month);
+        $mFrom = EthiopianCalendar::toGregorian($year, $month, 1)->format('Y-m-d');
+        $mTo = EthiopianCalendar::toGregorian($year, $month, $days)->format('Y-m-d');
+
+        $f['from'] = $mFrom;
+        $f['to'] = $mTo;
+
+        $ov = self::adminOverview($f);
+
+        $sessions = DB::table('attendance as a')
+            ->join('programs as p', 'p.id', '=', 'a.program_id')
+            ->whereBetween('a.occurrence_date', [$mFrom, $mTo])
+            ->when(! empty($f['program_id']), fn ($q) => $q->where('a.program_id', (int) $f['program_id']))
+            ->select('a.program_id', 'a.occurrence_date')
+            ->distinct()
+            ->get()
+            ->count();
+
+        // Detailed program occurrences in the selected month for Phase 6.1
+        $publishedPrograms = DB::table('programs as p')
+            ->leftJoin('program_categories as pc', 'pc.id', '=', 'p.category_id')
+            ->where('p.status', 'published')
+            ->where('p.requires_attendance', true)
+            ->when(! empty($f['program_id']), fn ($q) => $q->where('p.id', (int) $f['program_id']))
+            ->select('p.*', 'pc.name as category_name')
+            ->when(Schema::hasColumn('program_categories', 'name_en'), fn ($q) => $q->addSelect('pc.name_en as category_name_en'))
+            ->when(Schema::hasColumn('program_categories', 'color'), fn ($q) => $q->addSelect('pc.color as category_color'))
+            ->get();
+        Schedule::loadOverrides($publishedPrograms);
+
+        $monthOccurrences = [];
+        $todayLocal = Dates::todayLocal();
+        foreach ($publishedPrograms as $p) {
+            foreach (Schedule::between($p, $mFrom, $mTo, null, true) as $o) {
+                $occDate = $o['date'];
+                $attStats = DB::table('attendance')
+                    ->where('program_id', $p->id)
+                    ->where('occurrence_date', $occDate)
+                    ->selectRaw('
+                        SUM(CASE WHEN status IN ("present", "late") THEN 1 ELSE 0 END) as present_count,
+                        SUM(CASE WHEN status = "absent" THEN 1 ELSE 0 END) as absent_count,
+                        SUM(CASE WHEN status = "excused" THEN 1 ELSE 0 END) as excused_count,
+                        COUNT(*) as total_marked
+                    ')
+                    ->first();
+
+                $expectedMembersCount = self::expectedMembers($p, $occDate)->count();
+                $presentCount = (int) ($attStats->present_count ?? 0);
+                $absentCount = (int) ($attStats->absent_count ?? 0);
+                $excusedCount = (int) ($attStats->excused_count ?? 0);
+                $totalMarked = (int) ($attStats->total_marked ?? 0);
+                $expected = max($expectedMembersCount, $totalMarked);
+
+                $startsTime = Dates::of($o['starts_at'])->format('H:i');
+                $endsTime = Dates::of($o['ends_at'])->format('H:i');
+
+                $monthOccurrences[] = [
+                    'program_id' => (int) $p->id,
+                    'program_title' => $p->title,
+                    'category_name' => $p->category_name ?? null,
+                    'category_color' => $p->category_color ?? null,
+                    'date' => $occDate,
+                    'starts_at' => Dates::sql(Dates::of($o['starts_at'])),
+                    'ends_at' => Dates::sql(Dates::of($o['ends_at'])),
+                    'starts_time' => $startsTime,
+                    'ends_time' => $endsTime,
+                    'is_past' => $occDate < $todayLocal,
+                    'is_today' => $occDate === $todayLocal,
+                    'expected' => $expected,
+                    'present' => $presentCount,
+                    'absent' => $absentCount,
+                    'excused' => $excusedCount,
+                    'suspended' => ! empty($o['suspended']),
+                    'cancelled' => ! empty($o['cancelled']),
+                ];
+            }
+        }
+
+        usort($monthOccurrences, function ($a, $b) {
+            $cmp = strcmp($a['date'], $b['date']);
+            return $cmp !== 0 ? $cmp : strcmp($a['starts_at'], $b['starts_at']);
+        });
+
+        return [
+            'year' => $year,
+            'month' => $month,
+            'month_name_am' => EthiopianCalendar::MONTHS_AM[$month],
+            'month_name_en' => EthiopianCalendar::MONTHS_EN[$month],
+            'from_date' => $mFrom,
+            'to_date' => $mTo,
+            'present' => $ov['present'],
+            'absent' => $ov['absent'],
+            'excused' => $ov['excused'],
+            'expected' => $ov['total_records'],
+            'attendance_rate' => $ov['attendance_rate'],
+            'session_count' => $sessions,
+            'categories' => $ov['categories'],
+            'programs' => $ov['programs'],
+            'occurrences' => $monthOccurrences,
+        ];
+    }
+
+    /**
+     * Program-based attendance overview.
+     */
+    public static function byProgram(array $f): array
+    {
+        $currentEth = EthiopianCalendar::todayInAddis();
+        $year = (int) ($f['year'] ?? $currentEth['ethiopian_year']);
+        $ethFrom = EthiopianCalendar::toGregorian($year, 1, 1)->format('Y-m-d');
+        $pagumeDays = EthiopianCalendar::daysInMonth($year, 13);
+        $ethTo = EthiopianCalendar::toGregorian($year, 13, $pagumeDays)->format('Y-m-d');
+
+        $programs = DB::table('programs as p')
+            ->leftJoin('program_categories as pc', 'pc.id', '=', 'p.category_id')
+            ->where('p.status', 'published')
+            ->where('p.requires_attendance', true)
+            ->select('p.id', 'p.title', 'p.category_id', 'pc.name as category_name', 'pc.color as category_color')
+            ->orderBy('p.title')
+            ->get();
+
+        $out = [];
+        foreach ($programs as $p) {
+            $att = DB::table('attendance')
+                ->where('program_id', $p->id)
+                ->whereBetween('occurrence_date', [$ethFrom, $ethTo])
+                ->selectRaw('
+                    COUNT(DISTINCT occurrence_date) as session_count,
+                    SUM(CASE WHEN status IN ("present", "late") THEN 1 ELSE 0 END) as present_count,
+                    SUM(CASE WHEN status = "absent" THEN 1 ELSE 0 END) as absent_count,
+                    SUM(CASE WHEN status = "excused" THEN 1 ELSE 0 END) as excused_count,
+                    COUNT(*) as total_records
+                ')
+                ->first();
+
+            $pres = (int) ($att->present_count ?? 0);
+            $total = (int) ($att->total_records ?? 0);
+            $rate = $total > 0 ? round(($pres / $total) * 100, 1) : 0.0;
+
+            // Check suspended occurrences safely across overrides table or occurrences
+            $suspendedCount = 0;
+            if (Schema::hasTable('program_occurrence_overrides')) {
+                $suspendedCount += DB::table('program_occurrence_overrides')
+                    ->where('program_id', $p->id)
+                    ->whereBetween('occurrence_date', [$ethFrom, $ethTo])
+                    ->where('action', 'suspended')
+                    ->count();
+            }
+            if ($suspendedCount === 0 && Schema::hasTable('program_occurrences')) {
+                $suspendedCount += DB::table('program_occurrences')
+                    ->where('program_id', $p->id)
+                    ->whereBetween('occurrence_date', [$ethFrom, $ethTo])
+                    ->where('is_suspended', true)
+                    ->count();
+            }
+
+            $out[] = [
+                'id' => $p->id,
+                'title' => $p->title,
+                'category_id' => $p->category_id,
+                'category_name' => $p->category_name ?? 'Uncategorized',
+                'category_color' => $p->category_color,
+                'session_count' => (int) ($att->session_count ?? 0),
+                'suspended_count' => $suspendedCount,
+                'present_count' => $pres,
+                'absent_count' => (int) ($att->absent_count ?? 0),
+                'excused_count' => (int) ($att->excused_count ?? 0),
+                'total_expected' => $total,
+                'attendance_rate' => $rate,
+            ];
+        }
+
+        return $out;
+    }
+
+    /**
+     * Search members for Admin Attendance by name, member_no, phone, or id.
+     */
+    public static function searchMembers(?string $query): array
+    {
+        if (empty($query)) return [];
+        $s = '%' . trim($query) . '%';
+        return DB::table('users as u')
+            ->whereNull('u.deleted_at')
+            ->where(function ($w) use ($s, $query) {
+                $w->where('u.full_name', 'like', $s)
+                  ->orWhere('u.phone', 'like', $s)
+                  ->orWhere('u.member_no', 'like', $s);
+                if (is_numeric($query)) {
+                    $w->orWhere('u.id', (int) $query);
+                }
+            })
+            ->select('u.id', 'u.full_name', 'u.member_no', 'u.phone', 'u.profile_image', 'u.member_group', 'u.status')
+            ->limit(25)
+            ->get()
+            ->map(function ($u) {
+                return [
+                    'id' => (int) $u->id,
+                    'full_name' => $u->full_name,
+                    'member_no' => $u->member_no,
+                    'phone' => $u->phone,
+                    'avatar_url' => Storage::url($u->profile_image),
+                    'member_group' => $u->member_group,
+                    'status' => $u->status,
+                ];
+            })
+            ->all();
+    }
+
+    /**
+     * Admin member attendance profile & history across all 13 Ethiopian months.
+     */
+    public static function adminMemberProfile(int $userId, int $year = 0): array
+    {
+        $u = DB::table('users')->where('id', $userId)->first(['id', 'full_name', 'phone', 'member_no', 'member_group', 'member_type', 'profile_image']);
+        if (! $u) throw ApiError::notFound('USER_NOT_FOUND', 'User not found');
+
+        $currentEth = EthiopianCalendar::todayInAddis();
+        if ($year < 1900 || $year > 2200) $year = (int) $currentEth['ethiopian_year'];
+
+        $ethFrom = EthiopianCalendar::toGregorian($year, 1, 1)->format('Y-m-d');
+        $pagumeDays = EthiopianCalendar::daysInMonth($year, 13);
+        $ethTo = EthiopianCalendar::toGregorian($year, 13, $pagumeDays)->format('Y-m-d');
+
+        $qb = DB::table('attendance as a')
+            ->join('programs as p', 'p.id', '=', 'a.program_id')
+            ->leftJoin('program_categories as pc', 'pc.id', '=', 'p.category_id')
+            ->leftJoin('users as taker', 'taker.id', '=', 'a.recorded_by')
+            ->where('a.user_id', $userId)
+            ->whereBetween('a.occurrence_date', [$ethFrom, $ethTo]);
+        $cols = [
+            'a.*',
+            'p.title as program_title',
+            'pc.name as category_name',
+            'pc.color as category_color',
+            'taker.full_name as recorder_name',
+        ];
+        if (Schema::hasTable('attendance_signatures')) {
+            $qb->leftJoin('attendance_signatures as sig', 'sig.attendance_id', '=', 'a.id');
+            $cols[] = 'sig.path as signature_path';
+        }
+        $records = $qb->select($cols)
+            ->orderByDesc('a.occurrence_date')
+            ->get();
+
+        $monthStats = [];
+        for ($m = 1; $m <= 13; $m++) {
+            $monthStats[$m] = [
+                'month' => $m,
+                'month_name_am' => EthiopianCalendar::MONTHS_AM[$m],
+                'month_name_en' => EthiopianCalendar::MONTHS_EN[$m],
+                'present' => 0,
+                'absent' => 0,
+                'excused' => 0,
+                'expected' => 0,
+                'attendance_rate' => 0.0,
+            ];
+        }
+
+        $presTotal = 0;
+        $absTotal = 0;
+        $excTotal = 0;
+        $allRecords = [];
+        $progStats = [];
+
+        foreach ($records as $r) {
+            $dateOnly = Dates::toDateOnly($r->occurrence_date);
+            [$gy, $gm, $gd] = array_map('intval', explode('-', substr($dateOnly, 0, 10)));
+            $eth = EthiopianCalendar::fromGregorian($gy, $gm, $gd);
+            $m = (int) $eth['month'];
+            if ($m >= 1 && $m <= 13) {
+                if (in_array($r->status, ['present', 'late'], true)) {
+                    $presTotal++;
+                    $monthStats[$m]['present']++;
+                } elseif ($r->status === 'absent') {
+                    $absTotal++;
+                    $monthStats[$m]['absent']++;
+                } elseif ($r->status === 'excused') {
+                    $excTotal++;
+                    $monthStats[$m]['excused']++;
+                }
+            }
+
+            // Group by program
+            $pid = (int) $r->program_id;
+            if (! isset($progStats[$pid])) {
+                $progStats[$pid] = [
+                    'program_id' => $pid,
+                    'program_title' => $r->program_title,
+                    'category_name' => $r->category_name,
+                    'category_color' => $r->category_color,
+                    'present' => 0,
+                    'absent' => 0,
+                    'excused' => 0,
+                    'total' => 0,
+                    'rate' => 0.0,
+                ];
+            }
+            if (in_array($r->status, ['present', 'late'], true)) {
+                $progStats[$pid]['present']++;
+            } elseif ($r->status === 'absent') {
+                $progStats[$pid]['absent']++;
+            } elseif ($r->status === 'excused') {
+                $progStats[$pid]['excused']++;
+            }
+            $progStats[$pid]['total']++;
+
+            $hasSig = ! empty($r->signature_id) || ! empty($r->signature_path);
+            $calendarDate = "{$eth['month_am']} {$eth['day']} ቀን {$eth['year']} ዓ.ም";
+            $allRecords[] = [
+                'id' => (int) $r->id,
+                'occurrence_date' => $dateOnly,
+                'calendar_date' => $calendarDate,
+                'ethiopian_date' => $eth['date'],
+                'program_id' => (int) $r->program_id,
+                'program_title' => $r->program_title,
+                'category_name' => $r->category_name,
+                'category_color' => $r->category_color,
+                'status' => $r->status,
+                'attended_at' => $r->attended_at,
+                'recorded_by' => $r->recorded_by ? (int) $r->recorded_by : null,
+                'recorder_name' => $r->recorder_name,
+                'notes' => $r->notes,
+                'has_signature' => $hasSig,
+                'signature_status' => $hasSig ? 'signed' : ($r->status === 'present' ? 'missing' : 'exempt'),
+                'signature_url' => $hasSig ? "/api/v1/programs/attendance/signatures/{$r->id}" : null,
+            ];
+        }
+
+        foreach ($monthStats as $m => &$b) {
+            $exp = $b['present'] + $b['absent'] + $b['excused'];
+            $b['expected'] = $exp;
+            $b['attendance_rate'] = $exp > 0 ? round(($b['present'] / $exp) * 100, 1) : 0.0;
+        }
+        unset($b);
+
+        foreach ($progStats as &$ps) {
+            $ps['rate'] = $ps['total'] > 0 ? round(($ps['present'] / $ps['total']) * 100, 1) : 0.0;
+        }
+        unset($ps);
+
+        $grandExpected = $presTotal + $absTotal + $excTotal;
+        $grandRate = $grandExpected > 0 ? round(($presTotal / $grandExpected) * 100, 1) : 0.0;
+
+        return [
+            'user' => [
+                'id' => $u->id,
+                'full_name' => $u->full_name,
+                'phone' => $u->phone,
+                'member_no' => $u->member_no,
+                'member_group' => $u->member_group,
+                'member_type' => $u->member_type,
+                'profile_image' => $u->profile_image,
+                'avatar_url' => Storage::url($u->profile_image),
+            ],
+            'year' => $year,
+            'total_present' => $presTotal,
+            'total_absent' => $absTotal,
+            'total_excused' => $excTotal,
+            'total_expected' => $grandExpected,
+            'attendance_rate' => $grandRate,
+            'months' => array_values($monthStats),
+            'programs_breakdown' => array_values($progStats),
+            'recent_records' => $allRecords,
+            'records' => $allRecords,
+        ];
+    }
+
+    /**
+     * Member's own yearly summary & monthly breakdown (strictly scoped to auth user).
+     */
+    public static function myYearlySummary(int $userId, int $year = 0): array
+    {
+        return self::adminMemberProfile($userId, $year);
     }
 }

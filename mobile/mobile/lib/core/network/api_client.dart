@@ -46,6 +46,11 @@ class ApiClient {
                 'User-Agent': 'Mozilla/5.0 (Linux; Android 14; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Mobile Safari/537.36',
               },
             )) {
+    final cachedCookie = _store.imunifyCookie;
+    if (cachedCookie != null && cachedCookie.isNotEmpty) {
+      _imunifyCookie = cachedCookie;
+      this.dio.options.headers['Cookie'] = cachedCookie;
+    }
     this.dio.interceptors.add(InterceptorsWrapper(onRequest: _onRequest, onError: _onError));
   }
 
@@ -90,6 +95,7 @@ class ApiClient {
       if (cookie != null) {
         _imunifyCookie = cookie;
         dio.options.headers['Cookie'] = cookie;
+        unawaited(_store.saveImunifyCookie(cookie));
       }
       c.complete(cookie);
     } catch (_) {
@@ -98,6 +104,14 @@ class ApiClient {
       _imunifySolving = null;
     }
     return c.future;
+  }
+
+  /// Ensures an Imunify challenge cookie is resolved if none is cached yet.
+  Future<String?> ensureImunifyResolved() async {
+    if (_imunifyCookie == null || _imunifyCookie!.isEmpty) {
+      return _solveImunify();
+    }
+    return _imunifyCookie;
   }
 
   /// GET with retries on transient failures; falls back to the cached body when still failing.
@@ -153,9 +167,14 @@ class ApiClient {
     // Check for Imunify360 Anti-Bot challenge block
     final isImunify = !isImunifyRetry &&
         ((res?.statusCode == 403 && (res?.data.toString().contains('Imunify360') ?? false)) ||
-         (res?.data.toString().contains('wsidchk') ?? false));
+         (res?.statusCode == 403 && (res?.data.toString().contains('bot-protection') ?? false)) ||
+         (res?.data.toString().contains('wsidchk') ?? false) ||
+         (res?.data.toString().contains('One moment, please...') ?? false));
 
     if (isImunify) {
+      try {
+        dio.httpClientAdapter.close(force: true);
+      } catch (_) {}
       final cookie = await _solveImunify();
       if (cookie != null) {
         try {
@@ -248,14 +267,22 @@ class ApiClient {
     final body = res.data;
     if (body is Map) {
       final errors = <String, String>{};
+      final fieldMessages = <String, String>{};
       for (final err in (body['errors'] as List? ?? const [])) {
-        if (err is Map && err['field'] != null) errors[err['field'] as String] = (err['code'] ?? 'INVALID_VALUE') as String;
+        if (err is Map && err['field'] != null) {
+          final fName = err['field'] as String;
+          errors[fName] = (err['code'] ?? 'INVALID_VALUE') as String;
+          if (err['message'] != null && (err['message'] as String).isNotEmpty) {
+            fieldMessages[fName] = err['message'] as String;
+          }
+        }
       }
       return ApiException(
         code: (body['code'] as String?) ?? ApiException.unknown,
         status: res.statusCode,
         message: body['message'] as String?,
         fieldErrors: errors,
+        fieldMessages: fieldMessages,
         serverData: body['errors'],
       );
     }

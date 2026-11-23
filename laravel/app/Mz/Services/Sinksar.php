@@ -52,9 +52,13 @@ final class Sinksar
         $m = (int) $parts[1];
         $d = (int) $parts[2];
 
-        // If year is ~2000-2030 and month <= 13, detect if Ethiopian
-        if ($y < 2020 && $m <= 13) {
-            // It could be Ethiopian date (e.g. 2019-02-15)
+        // Detect Ethiopian date (month 13 Pagume, or explicit parameter, or Ethiopian year range)
+        $isEth = ($m === 13) || ($m >= 1 && $m <= 13 && ($y < 2024 || request('calendar') === 'ethiopian' || request('ethiopian') === '1'));
+        if ($isEth && $m >= 1 && $m <= 13) {
+            // Validate Pagume days (5 in common years, 6 in leap years: 2015, 2019, 2023, 2027 E.C.)
+            $maxDays = EthiopianCalendar::daysInMonth($y, $m);
+            $d = max(1, min($d, $maxDays));
+
             $greg = EthiopianCalendar::toGregorian($y, $m, $d);
             $gregStr = $greg->format('Y-m-d');
             $eth = EthiopianCalendar::fromGregorian((int) $greg->format('Y'), (int) $greg->format('m'), (int) $greg->format('d'));
@@ -216,19 +220,107 @@ final class Sinksar
     /**
      * Format a database row into an API-ready response.
      */
-    private static function formatRecord(object $r, array $info): array
+    public static function formatRecord(object $r, array $info): array
     {
         $annual = is_string($r->annual_feasts) ? (json_decode($r->annual_feasts, true) ?: []) : ($r->annual_feasts ?? []);
+        $annual = array_map(function ($item) {
+            if (is_string($item)) {
+                return trim(str_replace(['dit*', 'd*', 'n***', 'n*'], '', $item));
+            }
+            if (is_array($item) && isset($item['title'])) {
+                $item['title'] = trim(str_replace(['dit*', 'd*', 'n***', 'n*'], '', $item['title']));
+            }
+            return $item;
+        }, $annual);
         $monthly = is_string($r->monthly_feasts) ? (json_decode($r->monthly_feasts, true) ?: []) : ($r->monthly_feasts ?? []);
+        $monthly = array_map(function ($item) {
+            if (is_string($item)) {
+                return trim(str_replace(['dit*', 'd*', 'n***', 'n*'], '', $item));
+            }
+            if (is_array($item) && isset($item['title'])) {
+                $item['title'] = trim(str_replace(['dit*', 'd*', 'n***', 'n*'], '', $item['title']));
+            }
+            return $item;
+        }, $monthly);
+
+        // Retrieve all annual saints from synaxarium_saints if empty
+        if (empty($annual) && \Illuminate\Support\Facades\Schema::hasTable('synaxarium_saints')) {
+            $saints = DB::table('synaxarium_saints')
+                ->where('month', $r->ethiopian_month)
+                ->where('day', $r->ethiopian_day)
+                ->orderBy('order_index')
+                ->get();
+            if ($saints->isNotEmpty()) {
+                $annual = $saints->map(fn ($s) => [
+                    'id' => "synax-saint-{$s->id}",
+                    'title' => str_replace(['dit*', 'd*'], '', $s->name),
+                    'sourceText' => !empty($s->biography) ? str_replace(['dit*', 'd*'], '', $s->biography) : str_replace(['dit*', 'd*'], '', $s->name),
+                    'type' => $s->type ?? 'annual',
+                ])->all();
+            }
+        }
+
+        // Retrieve and expand ALL monthly recurring commemorations for this day throughout the year
+        $dayNum = (int) $r->ethiopian_day;
+        $monthlyFeastsDef = EthiopianCalendar::MONTHLY_FEASTS[$dayNum] ?? null;
+        if (!empty($monthlyFeastsDef)) {
+            $splitNames = preg_split('/[፣,]/u', $monthlyFeastsDef);
+            $expandedMonthly = [];
+            $mIdx = 1;
+            foreach ($splitNames as $name) {
+                $trimmed = trim(preg_replace('/^\d+[\.\s\-]+/u', '', $name));
+                $trimmed = trim(str_replace(['dit*', 'd*'], '', $trimmed));
+                if ($trimmed !== '') {
+                    $expandedMonthly[] = [
+                        'id' => "{$r->ethiopian_month}-{$r->ethiopian_day}-monthly-{$mIdx}",
+                        'title' => $trimmed,
+                        'sourceText' => "ወርኀዊ መታሰቢያ፦ {$trimmed}",
+                    ];
+                    $mIdx++;
+                }
+            }
+            if (!empty($expandedMonthly)) {
+                $monthly = $expandedMonthly;
+            }
+        }
 
         // Featured commemoration for the daily banner
-        $featured = !empty($annual) ? $annual[0]['title'] : (!empty($monthly) ? $monthly[0]['title'] : 'የቅዱሳን መታሰቢያ');
+        $annualTitle = '';
+        if (!empty($annual)) {
+            $firstAnnual = $annual[0];
+            $annualTitle = is_array($firstAnnual) ? ($firstAnnual['title'] ?? '') : (string) $firstAnnual;
+        }
+        $monthlyTitle = '';
+        if (!empty($monthly)) {
+            $firstMonthly = $monthly[0];
+            $monthlyTitle = is_array($firstMonthly) ? ($firstMonthly['title'] ?? '') : (string) $firstMonthly;
+        }
+        $featured = $annualTitle !== '' ? $annualTitle : ($monthlyTitle !== '' ? $monthlyTitle : 'የቅዱሳን መታሰቢያ');
 
         // Check if full-text narratives exist in the database for this Ethiopian month & day
         $narratives = DB::table('sinksar_narratives')
             ->where('ethiopian_month', $r->ethiopian_month)
             ->where('ethiopian_day', $r->ethiopian_day)
             ->get(['id', 'title', 'source', 'summary', 'body', 'verified']);
+
+        if ($narratives->isEmpty() && \Illuminate\Support\Facades\Schema::hasTable('synaxarium_entries')) {
+            $synaxEntry = DB::table('synaxarium_entries')
+                ->where('month', $r->ethiopian_month)
+                ->where('day', $r->ethiopian_day)
+                ->first();
+            if ($synaxEntry) {
+                $narratives = collect([
+                    (object) [
+                        'id' => (int) $synaxEntry->id,
+                        'title' => str_replace(['dit*', 'd*'], '', $synaxEntry->title),
+                        'source' => $synaxEntry->source_book_id ?? 'ስንክሳር',
+                        'summary' => str_replace(['dit*', 'd*'], '', $synaxEntry->summary),
+                        'body' => str_replace(['dit*', 'd*'], '', $synaxEntry->body_am),
+                        'verified' => (bool) ($synaxEntry->is_editorially_verified ?? false),
+                    ]
+                ]);
+            }
+        }
 
         return [
             'id' => (int) $r->id,
@@ -251,10 +343,10 @@ final class Sinksar
             'full_text_available' => $narratives->isNotEmpty() || (bool) $r->full_text_available,
             'narratives' => $narratives->map(fn ($n) => [
                 'id' => (int) $n->id,
-                'title' => $n->title,
+                'title' => trim(str_replace(['dit*', 'd*', 'n***', 'n*'], '', $n->title)),
                 'source' => $n->source,
-                'summary' => $n->summary,
-                'body' => $n->body,
+                'summary' => $n->summary ? trim(str_replace(['dit*', 'd*', 'n***', 'n*'], '', $n->summary)) : null,
+                'body' => trim(str_replace(['dit*', 'd*', 'n***', 'n*'], '', $n->body)),
                 'verified' => (bool) $n->verified,
             ])->all(),
             'has_narratives' => $narratives->isNotEmpty(),

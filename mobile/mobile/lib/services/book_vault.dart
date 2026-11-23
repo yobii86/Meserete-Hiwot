@@ -22,10 +22,24 @@ class BookVault {
   static const FlutterSecureStorage _storage = FlutterSecureStorage();
   static final Map<int, Uint8List> _memCache = {};
 
+  static bool get isTest => Platform.environment.containsKey('FLUTTER_TEST');
+
   static Future<Directory> _dir() async {
-    final dir = Directory('${(await getApplicationSupportDirectory()).path}${Platform.pathSeparator}books');
-    if (!dir.existsSync()) dir.createSync(recursive: true);
-    return dir;
+    if (isTest) {
+      final dir = Directory('${Directory.systemTemp.path}${Platform.pathSeparator}books_cache');
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      return dir;
+    }
+    try {
+      final supportDir = await getApplicationSupportDirectory();
+      final dir = Directory('${supportDir.path}${Platform.pathSeparator}books');
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      return dir;
+    } catch (_) {
+      final dir = Directory('${Directory.systemTemp.path}${Platform.pathSeparator}books_cache');
+      if (!dir.existsSync()) dir.createSync(recursive: true);
+      return dir;
+    }
   }
 
   static Future<File> fileFor(int bookId) async => File('${(await _dir()).path}${Platform.pathSeparator}book_$bookId.bin');
@@ -114,6 +128,24 @@ class BookVault {
       final f = await fileFor(bookId);
       if (f.existsSync()) await f.delete();
     } catch (_) {}
+  }
+
+  static Future<List<int>> listDownloadedIds() async {
+    final ids = <int>{..._memCache.keys};
+    if (kIsWeb) return ids.toList();
+    try {
+      final dir = await _dir();
+      if (dir.existsSync()) {
+        for (final entry in dir.listSync()) {
+          final match = RegExp(r'book_(\d+)\.bin$').firstMatch(entry.path);
+          if (match != null) {
+            final id = int.tryParse(match.group(1)!);
+            if (id != null) ids.add(id);
+          }
+        }
+      }
+    } catch (_) {}
+    return ids.toList();
   }
 
   /// Delete every downloaded book and the key (sign-out).

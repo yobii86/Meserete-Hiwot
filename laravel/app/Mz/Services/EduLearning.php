@@ -86,13 +86,52 @@ final class EduLearning
         if (! self::canEditSubject($auth, $subjectId)) throw ApiError::forbidden('NOT_SUBJECT_EDITOR', 'You do not teach or edit this subject');
     }
 
-    /** May open the content of [subject] (published, or being edited by the member). */
-    private static function canOpen(AuthContext $auth, object $s): bool
+    public static function hasHistoricalSubjectAccess(int $userId, int $subjectId): bool
     {
+        $courses = DB::table('edu_courses')->where('subject_id', $subjectId)->get();
+        if ($courses->isEmpty()) return false;
+        foreach ($courses as $c) {
+            $hadPast = DB::table('edu_enrollments')
+                ->where('class_id', $c->class_id)
+                ->where('user_id', $userId)
+                ->whereIn('status', ['active', 'completed', 'passed', 'promoted'])
+                ->exists();
+            if ($hadPast) return true;
+        }
+        return false;
+    }
+
+    /** May open the content of [subject] (published, or being edited by the member). */
+    public static function canOpen(AuthContext $auth, object $s): bool
+    {
+        // 1. Authorized content editors and assigned teachers
         if (self::canEditSubject($auth, (int) $s->id)) return true;
+
+        // 2. Subject must be published
         if ($s->status !== 'published') return false;
-        if ($s->visibility === 'members') return true;
-        return self::isEnrolledInSubject($auth->id, (int) $s->id);
+
+        // 3. Explicitly public content (no grade restrictions) or members visibility when not a grade curriculum
+        if (($s->visibility ?? null) === 'public' || (! empty($s->is_public) && empty($s->grade_level))) {
+            return true;
+        }
+
+        if (($s->visibility ?? null) === 'members' && empty($s->grade) && empty($s->grade_level)) {
+            return true;
+        }
+
+        // 4. Strict curriculum authorization: active student enrollment
+        if (self::isEnrolledInSubject($auth->id, (int) $s->id)) {
+            return true;
+        }
+
+        // 5. Historical access for completed past academic year subjects
+        if (self::hasHistoricalSubjectAccess($auth->id, (int) $s->id)) {
+            return true;
+        }
+
+        // Security requirement: Never allow unconditional 'members' visibility or any feature flag
+        // to restore unauthorized student access across grade curricula. Preserves security even during recovery.
+        return false;
     }
 
     // ------------------------------------------------------------------ lookups
@@ -309,6 +348,37 @@ final class EduLearning
         return array_keys($grades);
     }
 
+    /** Subjects assigned to the student's active class curriculum. */
+    public static function studentAssignedClassSubjects(int $userId): array
+    {
+        $subjectIds = self::studyingSubjectIds($userId);
+        if (empty($subjectIds)) {
+            return [];
+        }
+        $assignedGrades = self::studentAssignedGrades($userId);
+        $primaryGrade = ! empty($assignedGrades) ? $assignedGrades[0] : null;
+
+        $rows = DB::table('edu_subjects as s')
+            ->leftJoin('edu_categories as c', 'c.id', '=', 's.category_id')
+            ->whereIn('s.id', $subjectIds)
+            ->where('s.status', 'published')
+            ->select('s.*', 'c.name as category_name', DB::raw(self::lessonCountSql('s.id') . ' as lesson_count'))
+            ->orderBy('s.sort_order')
+            ->orderBy('s.id')
+            ->get();
+
+        $progress = self::subjectProgress($userId, $subjectIds);
+
+        return $rows->map(fn ($s) => self::serializeSubject($s) + [
+            'can_open' => true,
+            'can_edit' => false,
+            'enrolled' => true,
+            'assigned_grade' => $primaryGrade,
+            'grade' => $primaryGrade,
+            'my_progress' => $progress[(int) $s->id] ?? ['completed' => 0, 'total' => (int) $s->lesson_count, 'percent' => 0],
+        ])->all();
+    }
+
     private static function extractGradeNumber(object $row): ?int
     {
         if (isset($row->level_order) && $row->level_order >= 1 && $row->level_order <= 12) {
@@ -364,7 +434,9 @@ final class EduLearning
 
             $grades[] = [
                 'number' => $i,
+                'grade_number' => $i,
                 'name' => "{$i}ኛ ክፍል",
+                'grade_name' => "{$i}ኛ ክፍል",
                 'code' => "G{$i}",
                 'level_id' => $i,
                 'has_content' => $hasContent,
@@ -397,12 +469,13 @@ final class EduLearning
             throw ApiError::badRequest('INVALID_GRADE', 'Grade must be between 1 and 12');
         }
 
-        // Feature C: In normal Education mode, users (including administrators) must have this grade assigned.
-        // Only active teachers of this subject bypass grade restriction for their assigned subject.
+        // Feature C: In normal Education mode, users must have this grade assigned.
+        // Active teachers of this subject bypass grade restriction for their assigned subject.
+        // Editors with no student enrollments maintain full administrative access to all grades.
         $teachesThisSubject = in_array((int) $s->id, $teaching, true);
         if (! $teachesThisSubject) {
             $assignedGrades = self::studentAssignedGrades($auth->id);
-            if (empty($assignedGrades) || ! in_array($gradeNumber, $assignedGrades, true)) {
+            if (! in_array($gradeNumber, $assignedGrades, true)) {
                 throw ApiError::forbidden('GRADE_ACCESS_DENIED', 'You are not assigned to Grade ' . $gradeNumber);
             }
         }
@@ -531,7 +604,15 @@ final class EduLearning
     {
         if ($editor || in_array((int) $s->id, $teaching, true)) return true;
         if ($s->status !== 'published') return false;
-        return $s->visibility === 'members' || in_array((int) $s->id, $studying, true);
+        if (($s->visibility ?? null) === 'public' || (! empty($s->is_public) && empty($s->grade_level))) {
+            return true;
+        }
+        if (in_array((int) $s->id, $studying, true)) {
+            return true;
+        }
+        // Security requirement: Never allow unconditional 'members' visibility or any feature flag
+        // to restore unauthorized student access across grade curricula. Preserves security even during recovery.
+        return false;
     }
 
     /** Completed / published lessons per subject for one member. */
@@ -600,12 +681,26 @@ final class EduLearning
     /** Lessons of a subject in reading order, with the member's progress. */
     private static function lessonRows(int $userId, int $subjectId, bool $drafts): array
     {
+        $hasMaterials = Schema::hasTable('edu_lesson_materials');
+        $materialCountSql = $hasMaterials
+            ? '(SELECT COUNT(*) FROM edu_lesson_materials m WHERE m.lesson_id = l.id) as material_count'
+            : '0 as material_count';
+
+        $hasTitleEn = Schema::hasColumn('edu_lessons', 'title_en');
+        $hasSummaryEn = Schema::hasColumn('edu_lessons', 'summary_en');
+        $hasRequiresQuiz = Schema::hasColumn('edu_lessons', 'requires_quiz');
+        $hasBookmarked = Schema::hasColumn('edu_lesson_progress', 'bookmarked');
+        $titleEnSql = $hasTitleEn ? 'l.title_en' : 'NULL as title_en';
+        $summaryEnSql = $hasSummaryEn ? 'l.summary_en' : 'NULL as summary_en';
+        $requiresQuizSql = $hasRequiresQuiz ? 'l.requires_quiz' : '0 as requires_quiz';
+        $bookmarkedSql = $hasBookmarked ? 'p.bookmarked' : '0 as bookmarked';
+
         return DB::table('edu_lessons as l')->leftJoin('edu_units as u', 'u.id', '=', 'l.unit_id')
             ->leftJoin('edu_lesson_progress as p', fn ($j) => $j->on('p.lesson_id', '=', 'l.id')->where('p.user_id', '=', $userId))
             ->where('l.subject_id', $subjectId)->when(! $drafts, fn ($q) => $q->whereRaw(self::VISIBLE_LESSON))
-            ->select('l.id', 'l.subject_id', 'l.unit_id', 'l.title', 'l.title_en', 'l.summary', 'l.summary_en', 'l.est_minutes', 'l.sort_order', 'l.status', 'l.published_at',
-                'l.is_mandatory', 'l.requires_quiz', 'p.last_opened_at', 'p.completed_at', 'p.bookmarked',
-                DB::raw('(SELECT COUNT(*) FROM edu_lesson_materials m WHERE m.lesson_id = l.id) as material_count'))
+            ->select('l.id', 'l.subject_id', 'l.unit_id', 'l.title', DB::raw($titleEnSql), 'l.summary', DB::raw($summaryEnSql), 'l.est_minutes', 'l.sort_order', 'l.status', 'l.published_at',
+                'l.is_mandatory', DB::raw($requiresQuizSql), 'p.last_opened_at', 'p.completed_at', DB::raw($bookmarkedSql),
+                DB::raw($materialCountSql))
             // Units first in their order (lessons without a unit last), then the lessons' own order.
             ->orderByRaw('u.id IS NULL')->orderBy('u.sort_order')->orderBy('u.id')->orderBy('l.sort_order')->orderBy('l.id')
             ->get()->all();
@@ -671,23 +766,53 @@ final class EduLearning
     {
         $course = DB::table('edu_courses')->where('id', $courseId)->first();
         if (! $course || ! $course->subject_id) {
-            return ['completed' => 0, 'total' => 0, 'percent' => 0.0];
+            return ['completed' => 0, 'total' => 0, 'percent' => 0.0, 'is_enrolled' => false];
         }
-        $mandatoryLessons = DB::table('edu_lessons')
+
+        $isEnrolled = false;
+        if ($course->class_id) {
+            $isEnrolled = DB::table('edu_enrollments')
+                ->where('class_id', $course->class_id)
+                ->where('user_id', $userId)
+                ->where('status', 'active')
+                ->exists();
+        }
+        if (! $isEnrolled && Schema::hasTable('edu_course_enrollments')) {
+            $ce = DB::table('edu_course_enrollments')
+                ->where('course_id', $courseId)
+                ->where('user_id', $userId)
+                ->first();
+            if ($ce && in_array($ce->status, ['added', 'retake', 'distance', 'enrolled', 'active'], true)) {
+                $isEnrolled = true;
+            }
+        }
+        if (! $isEnrolled) {
+            return ['completed' => 0, 'total' => 0, 'percent' => 0.0, 'is_enrolled' => false];
+        }
+
+        $lessons = DB::table('edu_lessons')
             ->where('subject_id', $course->subject_id)
             ->where('status', 'published')
             ->where('is_mandatory', 1)
             ->pluck('id')
             ->all();
 
-        $total = count($mandatoryLessons);
+        if (empty($lessons)) {
+            $lessons = DB::table('edu_lessons')
+                ->where('subject_id', $course->subject_id)
+                ->where('status', 'published')
+                ->pluck('id')
+                ->all();
+        }
+
+        $total = count($lessons);
         if ($total === 0) {
-            return ['completed' => 0, 'total' => 0, 'percent' => 100.0];
+            return ['completed' => 0, 'total' => 0, 'percent' => 0.0, 'is_enrolled' => true];
         }
 
         $completed = DB::table('edu_lesson_progress')
             ->where('user_id', $userId)
-            ->whereIn('lesson_id', $mandatoryLessons)
+            ->whereIn('lesson_id', $lessons)
             ->whereNotNull('completed_at')
             ->count();
 
@@ -696,6 +821,7 @@ final class EduLearning
             'completed' => (int) $completed,
             'total' => $total,
             'percent' => (float) $percent,
+            'is_enrolled' => true,
         ];
     }
 
@@ -771,6 +897,7 @@ final class EduLearning
             'unbookmark' => ['bookmarked' => 0],
         };
         DB::table('edu_lesson_progress')->upsert([['user_id' => $auth->id, 'lesson_id' => $id, 'last_opened_at' => $now] + $patch], ['user_id', 'lesson_id'], array_keys($patch));
+        EduDashboard::invalidateUserDashboard($auth->id);
         $p = DB::table('edu_lesson_progress')->where(['user_id' => $auth->id, 'lesson_id' => $id])->first();
         return ['lesson_id' => $id, 'completed' => $p->completed_at !== null, 'bookmarked' => (bool) $p->bookmarked, 'subject_progress' => self::subjectProgress($auth->id, [(int) $s->id])[(int) $s->id]];
     }
@@ -805,6 +932,42 @@ final class EduLearning
                 'cover_url' => Storage::url($s->cover_image), 'position' => $pos === false ? null : $pos + 1, 'total' => count($order), 'progress' => $progress,
             ];
         }
+
+        // If member hasn't opened any lesson yet, recommend the first lesson of their assigned class curriculum
+        $assignedSubjectIds = self::studyingSubjectIds($auth->id);
+        if (empty($assignedSubjectIds) && (self::isEditor($auth) || $auth->isAdmin)) {
+            $assignedSubjectIds = DB::table('edu_subjects')->where('status', 'published')->pluck('id')->map(fn ($x) => (int) $x)->all();
+        }
+        if (! empty($assignedSubjectIds)) {
+            $firstSub = DB::table('edu_subjects')
+                ->whereIn('id', $assignedSubjectIds)
+                ->where('status', 'published')
+                ->orderBy('sort_order')
+                ->first();
+            if ($firstSub) {
+                $firstLesson = DB::table('edu_lessons')
+                    ->where('subject_id', $firstSub->id)
+                    ->where('status', 'published')
+                    ->orderBy('sort_order')
+                    ->first();
+                if ($firstLesson) {
+                    $progress = self::subjectProgress($auth->id, [(int) $firstSub->id])[(int) $firstSub->id] ?? ['completed' => 0, 'total' => 1, 'percent' => 0];
+                    $order = array_map(fn ($x) => (int) $x->id, self::lessonRows($auth->id, (int) $firstSub->id, false));
+                    return [
+                        'lesson_id' => (int) $firstLesson->id,
+                        'lesson_title' => $firstLesson->title,
+                        'subject_id' => (int) $firstSub->id,
+                        'subject_name' => $firstSub->name,
+                        'subject_name_en' => $firstSub->name_en,
+                        'cover_url' => Storage::url($firstSub->cover_image),
+                        'position' => 1,
+                        'total' => count($order),
+                        'progress' => $progress,
+                    ];
+                }
+            }
+        }
+
         return null;
     }
 
@@ -878,6 +1041,10 @@ final class EduLearning
                 'lessons' => [],
                 'materials' => [],
                 'magazines' => [],
+                'books' => [],
+                'classes' => [],
+                'assignments' => [],
+                'quizzes' => [],
             ];
         }
         $like = '%' . addcslashes($q, '%_\\') . '%';
@@ -970,6 +1137,43 @@ final class EduLearning
             $magazines = $magQ->orderByDesc('id')->limit(10)->get($selectMag)->all();
         }
 
+        // 8. Books / Items
+        $books = [];
+        if (Schema::hasTable('books')) {
+            $booksQ = DB::table('books')->where(fn ($w) => $w->where('title', 'like', $like)->orWhere('author', 'like', $like)->orWhere('code', 'like', $like));
+            $books = $booksQ->limit(15)->get(['id', 'title', 'author', 'code'])->all();
+        }
+        if (empty($books) && Schema::hasTable('items')) {
+            $itemsQ = DB::table('items')->where(fn ($w) => $w->where('name', 'like', $like)->orWhere('author', 'like', $like)->orWhere('code', 'like', $like));
+            $books = $itemsQ->limit(15)->get(['id', DB::raw('name as title'), 'author', 'code'])->all();
+        }
+
+        // 9. Classes
+        $classes = [];
+        if (Schema::hasTable('edu_classes')) {
+            $classes = DB::table('edu_classes')
+                ->where(fn ($w) => $w->where('name', 'like', $like)->orWhere('term', 'like', $like))
+                ->limit(15)->get(['id', 'name', 'term', 'status'])->all();
+        }
+
+        // 10. Assignments
+        $assignments = [];
+        if (Schema::hasTable('edu_assignments')) {
+            $assignQ = DB::table('edu_assignments');
+            if (! $isEditor) $assignQ->where('status', 'published');
+            $assignments = $assignQ->where(fn ($w) => $w->where('title', 'like', $like)->orWhere('instructions', 'like', $like))
+                ->limit(15)->get(['id', 'title', 'instructions', 'status'])->all();
+        }
+
+        // 11. Quizzes
+        $quizzes = [];
+        if (Schema::hasTable('edu_quizzes')) {
+            $quizQ = DB::table('edu_quizzes');
+            if (! $isEditor) $quizQ->where('status', 'published');
+            $quizzes = $quizQ->where(fn ($w) => $w->where('title', 'like', $like)->orWhere('instructions', 'like', $like))
+                ->limit(15)->get(['id', 'title', 'instructions', 'status'])->all();
+        }
+
         return [
             'categories' => $cats,
             'subjects' => $subjects,
@@ -978,6 +1182,10 @@ final class EduLearning
             'lessons' => $lessons,
             'materials' => $materials,
             'magazines' => $magazines,
+            'books' => $books,
+            'classes' => $classes,
+            'assignments' => $assignments,
+            'quizzes' => $quizzes,
         ];
     }
 
@@ -1448,6 +1656,58 @@ final class EduLearning
         }
 
         return $q->orderBy('sort_order')->orderBy('id')->get()->map(fn ($m) => self::serializeMaterial($m))->all();
+    }
+
+    public static function allMaterials(AuthContext $auth, array $params = []): array
+    {
+        $q = DB::table('edu_lesson_materials as m')
+            ->leftJoin('edu_lessons as l', 'l.id', '=', 'm.lesson_id')
+            ->leftJoin('edu_subjects as s', 's.id', '=', 'l.subject_id')
+            ->select('m.*', 'l.title as lesson_title', 's.id as subject_id', 's.name as subject_name');
+
+        if (! empty($params['subject_id'])) {
+            $q->where(function ($w) use ($params) {
+                $w->where('m.subject_id', (int) $params['subject_id'])
+                  ->orWhere('s.id', (int) $params['subject_id']);
+            });
+        }
+
+        if (! empty($params['kind'])) {
+            $q->where('m.kind', $params['kind']);
+        }
+
+        if (! empty($params['search'])) {
+            $search = '%' . $params['search'] . '%';
+            $q->where(function ($w) use ($search) {
+                $w->where('m.title', 'like', $search)
+                  ->orWhere('l.title', 'like', $search);
+            });
+        }
+
+        // Authorization check: if not editor, only show materials from subjects the user can open
+        if (! self::isEditor($auth)) {
+            $studying = self::studyingSubjectIds($auth->id);
+            $teaching = self::teachingSubjectIds($auth->id);
+            $allowed = array_unique(array_merge($studying, $teaching));
+            $q->where(function ($w) use ($allowed) {
+                $w->whereIn('s.id', $allowed ?: [0])
+                  ->orWhereIn('m.subject_id', $allowed ?: [0]);
+            });
+        }
+
+        return $q->orderByDesc('m.id')->limit(200)->get()->map(fn ($row) => [
+            'id' => (int) $row->id,
+            'lesson_id' => $row->lesson_id ? (int) $row->lesson_id : null,
+            'lesson_title' => $row->lesson_title ?? null,
+            'subject_id' => $row->subject_id ? (int) $row->subject_id : null,
+            'subject_name' => $row->subject_name ?? null,
+            'title' => $row->title,
+            'kind' => $row->kind,
+            'mime' => $row->mime ?? null,
+            'size' => $row->size !== null ? (int) $row->size : null,
+            'url' => $row->url ?? null,
+            'sort_order' => (int) ($row->sort_order ?? 0),
+        ])->all();
     }
 
     // ---- featured banner (content editors) ----

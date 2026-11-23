@@ -35,6 +35,11 @@ class Book {
     required this.id,
     required this.title,
     this.author,
+    this.subtitle,
+    this.publisher,
+    this.publicationYear,
+    this.language,
+    this.categoryType,
     required this.code,
     this.kind = 'physical',
     this.category,
@@ -55,11 +60,21 @@ class Book {
     this.isFavorite = false,
     this.progress,
     this.myRequest,
+    this.status = 'active',
+    this.condition,
+    this.location,
+    this.notes,
+    this.domain = 'mezmur',
   });
 
   final int id;
   final String title;
   final String? author;
+  final String? subtitle;
+  final String? publisher;
+  final int? publicationYear;
+  final String? language;
+  final String? categoryType;
   final String code;
   final String kind; // physical | digital
   final String? category;
@@ -82,20 +97,44 @@ class Book {
 
   /// requested | approved — the signed-in member's open request for this book.
   final String? myRequest;
+  final String status;
+  final String? condition;
+  final String? location;
+  final String? notes;
+  final String domain;
 
   bool get isDigital => kind == 'digital';
+  bool get hasFile => fileUrl != null && fileUrl!.isNotEmpty;
   bool get hasNarration => narrationUrl != null && narrationUrl!.isNotEmpty;
   int get effectiveAvailable => copiesAvailable ?? available ?? 0;
   int get effectiveTotal => copiesTotal ?? quantity ?? 0;
+  String get languageLabel => switch (language) {
+        'am' => 'አማርኛ',
+        'gez' => 'ግዕዝ',
+        'en' => 'English',
+        'om' => 'Afaan Oromoo',
+        'ti' => 'ትግርኛ',
+        _ => language ?? '—',
+      };
 
   Book copyWith({
     bool? isFavorite,
     BookProgress? progress,
+    String? subtitle,
+    String? publisher,
+    int? publicationYear,
+    String? language,
+    String? categoryType,
   }) =>
       Book(
         id: id,
         title: title,
         author: author,
+        subtitle: subtitle ?? this.subtitle,
+        publisher: publisher ?? this.publisher,
+        publicationYear: publicationYear ?? this.publicationYear,
+        language: language ?? this.language,
+        categoryType: categoryType ?? this.categoryType,
         code: code,
         kind: kind,
         category: category,
@@ -124,6 +163,11 @@ class Book {
       id: asIntOr(j['id']),
       title: asStr(j['title']) ?? asStr(j['name']) ?? '',
       author: asStr(j['author']),
+      subtitle: asStr(j['subtitle']),
+      publisher: asStr(j['publisher']),
+      publicationYear: asInt(j['publication_year']),
+      language: asStr(j['language']),
+      categoryType: asStr(j['category_type']),
       code: asStr(j['code']) ?? '',
       kind: asStr(j['kind']) ?? 'physical',
       category: asStr(j['category']),
@@ -144,8 +188,44 @@ class Book {
       isFavorite: j['is_favorite'] == true || j['is_favorite'] == 1,
       progress: progJson.isNotEmpty ? BookProgress.fromJson(progJson) : null,
       myRequest: asStr(j['my_request']),
+      status: asStr(j['status']) ?? 'active',
+      condition: asStr(j['condition']),
+      location: asStr(j['location']),
+      notes: asStr(j['notes']),
+      domain: asStr(j['domain']) ?? 'mezmur',
     );
   }
+
+  Json toJson() => {
+        'id': id,
+        'title': title,
+        'author': author,
+        'subtitle': subtitle,
+        'publisher': publisher,
+        'publication_year': publicationYear,
+        'language': language,
+        'category_type': categoryType,
+        'code': code,
+        'kind': kind,
+        'category': category,
+        'category_id': categoryId,
+        'category_name': categoryName,
+        'description': description,
+        'cover_url': coverUrl,
+        'available': available,
+        'quantity': quantity,
+        'copies_available': copiesAvailable,
+        'copies_total': copiesTotal,
+        'file_url': fileUrl,
+        'file_size': fileSize,
+        'narration_url': narrationUrl,
+        'narration_mime': narrationMime,
+        'narration_duration': narrationDuration,
+        'downloads': downloads,
+        'is_favorite': isFavorite,
+        'progress': progress?.toJson(),
+        'my_request': myRequest,
+      };
 }
 
 /// Category hierarchy for books (F16).
@@ -157,6 +237,9 @@ class LibraryCategory {
     required this.name,
     this.nameEn,
     this.code,
+    this.categoryType = 'physical',
+    this.description,
+    this.isActive = true,
     this.sortOrder = 0,
     this.booksCount = 0,
     this.children = const [],
@@ -168,6 +251,9 @@ class LibraryCategory {
   final String name;
   final String? nameEn;
   final String? code;
+  final String categoryType;
+  final String? description;
+  final bool isActive;
   final int sortOrder;
   final int booksCount;
   final List<LibraryCategory> children;
@@ -179,10 +265,26 @@ class LibraryCategory {
         name: asStr(j['name']) ?? '',
         nameEn: asStr(j['name_en']),
         code: asStr(j['code']),
+        categoryType: asStr(j['category_type']) ?? 'physical',
+        description: asStr(j['description']),
+        isActive: j['is_active'] == null || j['is_active'] == true || j['is_active'] == 1,
         sortOrder: asIntOr(j['sort_order']),
         booksCount: asIntOr(j['books_count']),
         children: asJsonList(j['children']).map(LibraryCategory.fromJson).toList(),
       );
+
+  Json toJson() => {
+        'id': id,
+        'parent_id': parentId,
+        'domain': domain,
+        'name': name,
+        'name_en': nameEn,
+        'code': code,
+        'category_type': categoryType,
+        'description': description,
+        'is_active': isActive,
+        'sort_order': sortOrder,
+      };
 }
 
 /// Physical library copy item (F17).

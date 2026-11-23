@@ -144,6 +144,14 @@ Route::prefix('payments')->middleware('mz')->group(function () use ($period) {
         unset($q['page'], $q['limit']);
         return Http::page(Payments::adminList($q, $page));
     })->middleware($view);
+    Route::get('summary', fn () => Http::ok(Payments::contributionSummary(Ctx::q())))->middleware($view);
+    Route::get('yearly-summary', fn () => Http::ok(Payments::yearlyContributionSummary(Ctx::q())))->middleware($view);
+    Route::get('detailed', function () use ($view) {
+        $q = Ctx::q();
+        $page = Page::params(['page' => $q['page'] ?? null, 'limit' => $q['limit'] ?? 50]);
+        unset($q['page'], $q['limit']);
+        return Http::page(Payments::detailedContributions($q, $page));
+    })->middleware($view);
     Route::get('member/{id}', fn () => Http::ok(Payments::forMember(Ctx::id())))->middleware($view);
     Route::post('/', fn () => Http::created(Payments::record(Ctx::actx(), Ctx::body(Z::object($paymentShape())->strict()))))->middleware($manage);
     Route::patch('{id}', function () use ($paymentShape) {
@@ -177,6 +185,7 @@ Route::prefix('org/contribution-receipts')->middleware('mz')->group(function () 
 
     Route::get('/', function () use ($period, $view) {
         $q = Ctx::query(Z::object([
+            'id' => Z::coerceNumber()->optional(),
             'period' => $period()->optional(),
             'status' => Z::enum(['submitted', 'under_review', 'approved', 'rejected', 'correction_needed'])->optional(),
             'user_id' => Z::coerceNumber()->optional(),

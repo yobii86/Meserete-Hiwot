@@ -37,13 +37,47 @@ Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function 
     Route::get('classes/{id}/my-results', fn () => Http::ok(Edu::myResults(Ctx::auth(), Ctx::id())));
     Route::get('my-outcomes', fn () => Http::ok(EduOutcomes::forStudent(Ctx::auth())));
     Route::get('my-certificates', fn () => Http::ok(EduCertificates::myCertificates(Ctx::auth()->id)));
-    Route::get('courses/{id}/completion', fn () => Http::ok(EduLearning::courseCompletion(Ctx::auth()->id, Ctx::id())));
-    Route::post('assignments/{id}/submit', function () {
-        $id = Ctx::id();
-        $file = Upload::optional('document');
-        $raw = Ctx::input()['text'] ?? null;
-        $text = is_string($raw) ? (mb_substr(trim($raw), 0, 20000) ?: null) : null;
-        return Http::ok(Edu::submit(Ctx::auth(), $id, $text, $file));
+    Route::get('me/report-card', fn () => Http::ok(\App\Mz\Services\EduReportCard::generateData(Ctx::auth(), Ctx::auth()->id)));
+    Route::get('students/{id}/report-card', fn () => Http::ok(\App\Mz\Services\EduReportCard::generateData(Ctx::auth(), Ctx::id())));
+    Route::get('me/report-card/pdf', function () {
+        $pdf = \App\Mz\Services\EduReportCard::generatePdf(Ctx::auth(), Ctx::auth()->id);
+        return response($pdf, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="report_card.pdf"',
+        ]);
+    });
+    Route::get('students/{id}/report-card/pdf', function () {
+        $pdf = \App\Mz\Services\EduReportCard::generatePdf(Ctx::auth(), Ctx::id());
+        return response($pdf, 200, [
+            'Content-Type' => 'application/pdf',
+            'Content-Disposition' => 'inline; filename="student_' . Ctx::id() . '_report_card.pdf"',
+        ]);
+    });
+    Route::get('courses/{id}/completion', function () {
+        $auth = Ctx::auth();
+        $targetUid = $auth->id;
+        $courseId = Ctx::id();
+        $q = Ctx::q();
+        if (! empty($q['user_id']) && is_numeric($q['user_id'])) {
+            $reqUid = (int) $q['user_id'];
+            if ($reqUid === $auth->id || $auth->isAdmin || $auth->can('education.manage') || $auth->can('education.view') || $auth->can('education.reports')) {
+                $targetUid = $reqUid;
+            } else {
+                $course = DB::table('edu_courses')->where('id', $courseId)->first();
+                $isAuthorizedTeacher = false;
+                if ($course) {
+                    $isAuthorizedTeacher = ($course->teacher_user_id == $auth->id)
+                        || (Schema::hasTable('edu_course_teachers') && DB::table('edu_course_teachers')->where(['course_id' => $courseId, 'user_id' => $auth->id, 'status' => 'active'])->exists())
+                        || ($course->class_id && Schema::hasTable('edu_class_staff') && DB::table('edu_class_staff')->where(['class_id' => $course->class_id, 'user_id' => $auth->id])->exists());
+                }
+                if ($isAuthorizedTeacher) {
+                    $targetUid = $reqUid;
+                } else {
+                    throw ApiError::forbidden('FORBIDDEN', 'You cannot inspect another student\'s progress');
+                }
+            }
+        }
+        return Http::ok(EduLearning::courseCompletion($targetUid, $courseId));
     });
     Route::get('classes/{id}/students', function () {
         $id = Ctx::id();
@@ -80,24 +114,10 @@ Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function 
         return Http::ok(Edu::setGroupMembers(Ctx::auth(), $id, $b['user_ids']));
     });
     Route::delete('groups/{id}', fn () => Http::ok(Edu::deleteGroup(Ctx::auth(), Ctx::id())));
-    Route::get('courses/{id}/assignments', fn () => Http::ok(Edu::listAssignments(Ctx::auth(), Ctx::id())));
-    Route::post('courses/{id}/assignments', function () {
-        $id = Ctx::id();
-        return Http::created(Edu::createAssignment(Ctx::auth(), $id, Ctx::body(EduSchemas::assignment())));
-    });
-    Route::patch('assignments/{id}', function () {
-        $id = Ctx::id();
-        return Http::ok(Edu::updateAssignment(Ctx::auth(), $id, Ctx::body(EduSchemas::assignment()->partial()->strict())));
-    });
-    Route::delete('assignments/{id}', function () {
-        Edu::deleteAssignment(Ctx::auth(), Ctx::id());
-        return Http::ok(null);
-    });
     Route::post('assignments/{id}/file', function () {
         $id = Ctx::id();
         return Http::ok(Edu::setAssignmentFile(Ctx::auth(), $id, Upload::single('document')));
     });
-    Route::get('assignments/{id}/submissions', fn () => Http::ok(Edu::submissions(Ctx::auth(), Ctx::id())));
     Route::put('submissions/{id}/grade', function () {
         $id = Ctx::id();
         return Http::ok(Edu::grade(Ctx::auth(), $id, Ctx::body(Z::object(['score' => EduSchemas::score()->nullable(), 'feedback' => V::optionalText(2000)]))));
@@ -230,6 +250,36 @@ Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function 
         Route::delete('classes/{id}/students/{userId}', fn () => Http::ok(\App\Mz\Services\EduRegistration::unregister(Ctx::actx(), Ctx::id(), Ctx::id('userId'))));
     });
 
+    // Level route aliases so /edu/levels/$id resolves seamlessly
+    Route::middleware('mz:all,education.manage')->group(function () {
+        Route::get('levels', fn () => Http::ok(\App\Mz\Services\EduAcademicYears::listLevels()));
+        Route::patch('levels/{id}', function () {
+            $id = Ctx::id();
+            return Http::ok(\App\Mz\Services\EduAcademicYears::updateLevel(Ctx::actx(), $id, Ctx::body(EduSchemas::level()->partial()->strict())));
+        });
+    });
+
+    // Class Assignment & Enrolment (accessible by education.register and education.manage)
+    Route::middleware('mz:any,education.register,education.manage')->prefix('admin')->group(function () {
+        Route::get('classes/{id}/assignable', function () {
+            $id = Ctx::id();
+            $q = Ctx::q();
+            return Http::page(\App\Mz\Services\EduRegistration::assignable($id, is_string($q['q'] ?? null) ? $q['q'] : null, is_string($q['group'] ?? null) ? $q['group'] : null, Page::params($q)));
+        });
+        Route::post('classes/{id}/assign', function () {
+            $id = Ctx::id();
+            return Http::ok(\App\Mz\Services\EduRegistration::assign(Ctx::actx(), $id, Ctx::body(EduSchemas::assign())));
+        });
+    });
+
+    // Education Attendance Dashboard (Admin)
+    Route::middleware('mz:any,education.manage,education.view,education.reports,education.attendance_view,attendance.manage,attendance.view')
+        ->prefix('admin/attendance')->group(function () {
+            Route::get('dashboard', fn () => Http::ok(\App\Mz\Services\EduAttendance::dashboard(Ctx::auth(), Ctx::q())));
+            Route::get('student/{userId}', fn () => Http::ok(\App\Mz\Services\EduAttendance::studentProfile(Ctx::auth(), Ctx::id('userId'), Ctx::q())));
+            Route::get('record/{id}', fn () => Http::ok(\App\Mz\Services\EduAttendance::recordDetail(Ctx::auth(), Ctx::id())));
+        });
+
     Route::middleware('mz:all,education.manage')->prefix('admin')->group(function () {
         Route::get('classes', fn () => Http::ok(Edu::adminClasses(is_string(Ctx::q()['status'] ?? null) ? Ctx::q()['status'] : null, isset(Ctx::q()['academic_year_id']) ? (int) Ctx::q()['academic_year_id'] : null)));
         Route::post('classes', fn () => Http::created(Edu::createClass(Ctx::actx(), Ctx::body(EduSchemas::klass()))));
@@ -241,17 +291,16 @@ Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function 
             Edu::deleteClass(Ctx::actx(), Ctx::id());
             return Http::ok(null);
         });
+        Route::get('curriculum/preview/{levelId}', fn () => Http::ok(Edu::curriculumPreview(Ctx::id('levelId'))));
+        Route::post('curriculum/sync', fn () => Http::ok(Edu::syncCurriculum(Ctx::actx())));
+        Route::post('classes/{id}/sync-curriculum', fn () => Http::ok(Edu::syncClassCurriculum(Ctx::actx(), Ctx::id())));
+        Route::post('classes/sync-grades', function () {
+            $b = Ctx::input();
+            $yearId = isset($b['academic_year_id']) ? (int) $b['academic_year_id'] : null;
+            return Http::ok(Edu::ensureGradeClasses($yearId));
+        });
 
-        // Class Assignment & Transfers (F2)
-        Route::get('classes/{id}/assignable', function () {
-            $id = Ctx::id();
-            $q = Ctx::q();
-            return Http::page(\App\Mz\Services\EduRegistration::assignable($id, is_string($q['q'] ?? null) ? $q['q'] : null, is_string($q['group'] ?? null) ? $q['group'] : null, Page::params($q)));
-        });
-        Route::post('classes/{id}/assign', function () {
-            $id = Ctx::id();
-            return Http::ok(\App\Mz\Services\EduRegistration::assign(Ctx::actx(), $id, Ctx::body(EduSchemas::assign())));
-        });
+        // Class Transfers & Promotion (F2)
         Route::post('enrollments/{id}/transfer', function () {
             $id = Ctx::id();
             $b = Ctx::body(EduSchemas::transfer());
@@ -293,8 +342,8 @@ Route::prefix('edu')->middleware(['mz', 'mz.module:education'])->group(function 
         });
 
         Route::get('levels', fn () => Http::ok(\App\Mz\Services\EduAcademicYears::listLevels()));
-        Route::get('admin/grades', fn () => Http::ok(\App\Mz\Services\EduAcademicYears::adminGrades(Ctx::auth())));
-        Route::get('admin/grades/{id}', fn () => Http::ok(\App\Mz\Services\EduAcademicYears::getGradeDetail(Ctx::auth(), Ctx::id())));
+        Route::get('grades', fn () => Http::ok(\App\Mz\Services\EduAcademicYears::adminGrades(Ctx::auth())));
+        Route::get('grades/{id}', fn () => Http::ok(\App\Mz\Services\EduAcademicYears::getGradeDetail(Ctx::auth(), Ctx::id())));
         Route::post('levels', fn () => Http::created(\App\Mz\Services\EduAcademicYears::createLevel(Ctx::actx(), Ctx::body(EduSchemas::level()))));
         Route::patch('levels/{id}', function () {
             $id = Ctx::id();

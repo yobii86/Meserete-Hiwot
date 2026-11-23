@@ -6,7 +6,9 @@ import '../core/l10n/l10n.dart';
 import '../core/member_groups.dart';
 import '../core/providers.dart';
 import '../core/theme/app_colors.dart';
+import '../core/theme/app_theme.dart';
 import '../features/player/mini_player.dart';
+import '../features/auth/session.dart';
 import '../widgets/brand.dart';
 import '../widgets/states.dart';
 import 'chrome.dart';
@@ -87,6 +89,9 @@ class _AppShellState extends ConsumerState<AppShell> {
         // Pages inside the shell have their own Scaffold and
         // handle keyboard insets themselves.
         resizeToAvoidBottomInset: false,
+        drawerEnableOpenDragGesture: false,
+        endDrawerEnableOpenDragGesture: false,
+        endDrawer: const AppNavigationDrawer(),
 
         body: Column(
           children: [
@@ -197,21 +202,25 @@ class _AppShellState extends ConsumerState<AppShell> {
                         ? AppColors.eduGold.withValues(alpha: 0.24)
                         : AppColors.gold.withValues(alpha: 0.22),
                     destinations: nav.isEducation
-                        // ትምህርት: Learn · Books · Progress · Settings.
+                        // ትምህርት: Home · Class · My Library · Progress · Settings.
                         ? [
                             NavigationDestination(
-                              key: const ValueKey('edu-tab-learn'),
-                              icon: const Icon(Icons.auto_stories_outlined),
-                              selectedIcon: const Icon(
-                                Icons.auto_stories_rounded,
-                              ),
-                              label: l.elTabLearn,
+                              key: const ValueKey('edu-tab-home'),
+                              icon: const Icon(Icons.home_outlined),
+                              selectedIcon: const Icon(Icons.home_rounded),
+                              label: l.navHome,
+                            ),
+                            NavigationDestination(
+                              key: const ValueKey('edu-tab-classes'),
+                              icon: const Icon(Icons.school_outlined),
+                              selectedIcon: const Icon(Icons.school_rounded),
+                              label: l.elClass,
                             ),
                             NavigationDestination(
                               key: const ValueKey('edu-tab-books'),
                               icon: const Icon(Icons.menu_book_outlined),
                               selectedIcon: const Icon(Icons.menu_book_rounded),
-                              label: l.libBooks,
+                              label: l.navMyLibrary,
                             ),
                             NavigationDestination(
                               key: const ValueKey('edu-tab-progress'),
@@ -271,6 +280,135 @@ class _AppShellState extends ConsumerState<AppShell> {
                   ),
                 ),
               ),
+      ),
+    );
+  }
+}
+
+class AppNavigationDrawer extends ConsumerWidget {
+  const AppNavigationDrawer({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = context.l10n;
+    final p = context.palette;
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final user = ref.watch(currentUserProvider);
+
+    return Drawer(
+      backgroundColor: p.card,
+      child: SafeArea(
+        child: Column(
+          children: [
+            // Drawer Header
+            Container(
+              padding: const EdgeInsets.fromLTRB(20, 24, 20, 20),
+              decoration: BoxDecoration(
+                color: const Color(0xFF650D20),
+                border: Border(bottom: BorderSide(color: AppColors.gold.withValues(alpha: 0.4), width: 1.5)),
+              ),
+              child: Row(
+                children: [
+                  const AppLogo(size: 48),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          l.appName,
+                          style: context.serif(16, color: Colors.white, weight: FontWeight.w700),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          user?.fullName ?? (l.isEn ? 'Welcome' : 'እንኳን ደህና መጡ'),
+                          style: context.sans(12.5, color: AppColors.goldLight),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            // Navigation Items
+            Expanded(
+              child: ListView(
+                padding: const EdgeInsets.symmetric(vertical: 8),
+                children: [
+                  ListTile(
+                    leading: const Icon(Icons.home_outlined, color: Color(0xFF650D20)),
+                    title: Text(l.navHome, style: context.sans(14, weight: FontWeight.w600)),
+                    onTap: () {
+                      Navigator.pop(context);
+                      context.go('/hub');
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.school_outlined, color: Color(0xFF650D20)),
+                    title: Text(l.hubEducation, style: context.sans(14, weight: FontWeight.w600)),
+                    onTap: () {
+                      Navigator.pop(context);
+                      context.go('/edu');
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.library_music_outlined, color: Color(0xFF650D20)),
+                    title: Text(l.hubMezmur, style: context.sans(14, weight: FontWeight.w600)),
+                    onTap: () {
+                      Navigator.pop(context);
+                      context.go('/home');
+                    },
+                  ),
+                  if (user != null && user.isAdmin)
+                    ListTile(
+                      leading: const Icon(Icons.admin_panel_settings_outlined, color: Color(0xFF650D20)),
+                      title: Text(l.adminPanel, style: context.sans(14, weight: FontWeight.w600)),
+                      onTap: () {
+                        Navigator.pop(context);
+                        context.push('/admin');
+                      },
+                    ),
+                  const Divider(),
+                  ListTile(
+                    leading: const Icon(Icons.settings_outlined, color: Color(0xFF650D20)),
+                    title: Text(l.settings, style: context.sans(14, weight: FontWeight.w600)),
+                    onTap: () {
+                      Navigator.pop(context);
+                      context.push('/settings');
+                    },
+                  ),
+                  ListTile(
+                    leading: const Icon(Icons.info_outline_rounded, color: Color(0xFF650D20)),
+                    title: Text(l.aboutApp, style: context.sans(14, weight: FontWeight.w600)),
+                    onTap: () {
+                      Navigator.pop(context);
+                      context.push('/settings/about');
+                    },
+                  ),
+                  const Divider(),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                    child: Text(
+                      l.isEn ? 'Theme Selection' : 'የገጽታ ምርጫ',
+                      style: context.sans(12, color: p.muted, weight: FontWeight.w700),
+                    ),
+                  ),
+                  SwitchListTile(
+                    secondary: Icon(isDark ? Icons.dark_mode_rounded : Icons.light_mode_rounded, color: AppColors.gold),
+                    title: Text(isDark ? (l.isEn ? 'Dark Theme' : 'ጨለማ ገጽታ') : (l.isEn ? 'Light Theme' : 'ብርሃን ገጽታ'), style: context.sans(13.5)),
+                    value: isDark,
+                    onChanged: (_) => ThemeToggleButton.toggle(ref, context),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

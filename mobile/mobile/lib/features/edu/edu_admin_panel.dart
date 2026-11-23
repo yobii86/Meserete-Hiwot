@@ -11,7 +11,6 @@ import '../../widgets/brand.dart';
 import '../../widgets/states.dart';
 import '../auth/session.dart' show currentUserProvider;
 import '../guidance/contextual_help_sheet.dart';
-import '../library/books_screen.dart' show LibraryBooksScreen;
 
 /// Structured Education Admin Panel (Task 7).
 /// Accessible only to authorized administrators/teachers.
@@ -28,6 +27,17 @@ class EduAdminPanelScreen extends ConsumerWidget {
         (user.isSuperAdmin ||
             user.canAny([
               Perm.educationManage,
+              Perm.educationView,
+              Perm.educationClasses,
+              Perm.educationCurriculum,
+              Perm.educationLessons,
+              Perm.educationMaterials,
+              Perm.educationQuizzes,
+              Perm.educationExams,
+              Perm.educationAssessments,
+              Perm.educationMarks,
+              Perm.educationAttendanceView,
+              Perm.educationSettings,
               Perm.educationRegister,
               Perm.educationContent,
               Perm.educationReports,
@@ -67,22 +77,29 @@ class EduAdminPanelScreen extends ConsumerWidget {
             title: isEn ? 'Categories & Subjects' : 'ምድቦች እና የትምህርት ዓይነቶች',
             subtitle: isEn ? 'Organize educational departments' : 'የትምህርት ዘርፎችን ያደራጁ',
             icon: Icons.category_rounded,
-            route: '/edu/content?tab=categories',
-            permission: Perm.educationContent,
+            route: '/edu/content',
+            permissions: const [Perm.educationCurriculum, Perm.educationContent, Perm.educationManage],
           ),
           _AdminCard(
             title: isEn ? 'Learning Materials' : 'የትምህርት ግብዓቶችና ሰነዶች',
             subtitle: isEn ? 'Manage PDF guides & multimedia' : 'የድምጽ፣ ምስልና የፒዲኤፍ ማጣቀሻዎች',
             icon: Icons.attach_file_rounded,
             route: '/edu/content/materials',
-            permission: Perm.educationContent,
+            permissions: const [Perm.educationMaterials, Perm.educationContent, Perm.educationManage],
           ),
           _AdminCard(
             title: isEn ? 'Quizzes & Assessments' : 'ፈተናዎች እና ጥያቄዎች',
             subtitle: isEn ? 'Questions, tests & grading criteria' : 'የክለሳ ጥያቄዎችና የማለፊያ መስፈርቶች',
             icon: Icons.quiz_rounded,
             route: '/edu/admin/quizzes',
-            permission: Perm.educationContent,
+            permissions: const [Perm.educationQuizzes, Perm.educationExams, Perm.educationContent, Perm.educationManage],
+          ),
+          _AdminCard(
+            title: isEn ? 'ሰሌዳ መጽሔት (Seleda Magazine)' : 'ሰሌዳ መጽሔት',
+            subtitle: isEn ? 'Issues, publications & linked quizzes' : 'እትሞች፣ ጽሑፎች እና ተዛማጅ ፈተናዎች',
+            icon: Icons.menu_book_rounded,
+            route: '/edu/admin/magazines',
+            permissions: const [Perm.educationContent, Perm.educationManage],
           ),
         ],
       ),
@@ -101,28 +118,28 @@ class EduAdminPanelScreen extends ConsumerWidget {
             subtitle: isEn ? 'Manage grades 1–12, names and status' : 'ከ1ኛ እስከ 12ኛ ክፍሎችን እና ሁኔታቸውን ያስተዳድሩ',
             icon: Icons.format_list_numbered_rounded,
             route: '/edu/admin/grades',
-            permission: Perm.educationManage,
+            permissions: const [Perm.educationClasses, Perm.educationManage],
           ),
           _AdminCard(
             title: isEn ? 'Classes & Students' : 'ክፍሎች እና የተማሪዎች ምደባ',
             subtitle: isEn ? 'Class batches & student assignment' : 'የክፍል አደረጃጀትና የተማሪዎች ምደባ',
             icon: Icons.groups_rounded,
             route: '/edu/manage',
-            permission: Perm.educationManage,
+            permissions: const [Perm.educationClasses, Perm.educationManage],
           ),
           _AdminCard(
             title: isEn ? 'Teacher Assignments' : 'የአስተማሪዎች ምደባ',
             subtitle: isEn ? 'Assign courses to instructors' : 'ለአስተማሪዎች የትምህርት ክፍለ ጊዜ መመደብ',
             icon: Icons.person_add_alt_1_rounded,
             route: '/edu/courses',
-            permission: Perm.educationManage,
+            permissions: const [Perm.educationClasses, Perm.educationManage],
           ),
           _AdminCard(
             title: isEn ? 'Registration Desk' : 'የምዝገባ ቢሮ',
             subtitle: isEn ? 'Process new and pending enrollments' : 'አዳዲስ ምዝገባዎችን ያረጋግጡና ይመዝግቡ',
             icon: Icons.how_to_reg_rounded,
             route: '/edu/registrations',
-            permission: Perm.educationRegister,
+            permissions: const [Perm.educationRegister, Perm.educationManage],
           ),
         ],
       ),
@@ -134,28 +151,35 @@ class EduAdminPanelScreen extends ConsumerWidget {
             ? 'Score publication, attendance tracking and student journeys'
             : 'የውጤት አሰጣጥ፣ የተማሪዎች ክትትል እና ሪፖርቶች',
         icon: Icons.analytics_rounded,
-        color: const Color(0xFF2E7D32),
+        color: AppColors.goldDark,
         cards: [
+          _AdminCard(
+            title: isEn ? 'Attendance Dashboard' : 'የተማሪዎች ክትትል ዳሽቦርድ',
+            subtitle: isEn ? 'Student attendance profiles & program performance' : 'የተማሪዎች ክትትል ዝርዝርና የውጤት ትንተና',
+            icon: Icons.fact_check_outlined,
+            route: '/edu/admin/attendance',
+            permissions: const [Perm.educationAttendanceView, Perm.educationManage, Perm.educationView, Perm.educationReports],
+          ),
           _AdminCard(
             title: isEn ? 'Scores & Activity' : 'ውጤት እና እንቅስቃሴ',
             subtitle: isEn ? 'Performance analytics and ranks' : 'አጠቃላይ የውጤት ዝርዝር እና ትንተና',
             icon: Icons.bar_chart_rounded,
             route: '/edu/admin/scores',
-            permission: Perm.educationReports,
+            permissions: const [Perm.educationReports, Perm.educationMarks, Perm.educationManage],
           ),
           _AdminCard(
             title: isEn ? 'Marks Review' : 'የውጤት ማረጋገጫና ህትመት',
             subtitle: isEn ? 'Review & publish official marks' : 'ውጤቶችን መርምረው ለተማሪዎች ይፋ ያድርጉ',
             icon: Icons.fact_check_rounded,
             route: '/edu/review',
-            permission: Perm.educationManage,
+            permissions: const [Perm.educationMarks, Perm.educationAssessments, Perm.educationManage],
           ),
           _AdminCard(
             title: isEn ? 'Student Complaints & Inquiries' : 'የተማሪዎች ቅሬታዎችና ጥያቄዎች',
             subtitle: isEn ? 'Review grade & attendance appeals' : 'የውጤትና የፈተና አቤቱታዎችን ይመልከቱ',
             icon: Icons.feedback_outlined,
             route: '/edu/review?tab=complaints',
-            permission: Perm.educationManage,
+            permissions: const [Perm.educationView, Perm.educationManage],
           ),
         ],
       ),
@@ -173,8 +197,8 @@ class EduAdminPanelScreen extends ConsumerWidget {
             title: isEn ? 'Book Catalog' : 'የመጻሕፍት ካታሎግ',
             subtitle: isEn ? 'Digital and reference books' : 'ዲጂታል እና ማጣቀሻ መጻሕፍት',
             icon: Icons.library_books_rounded,
-            route: '/edu/library',
-            permission: null,
+            route: '/edu/admin/catalog',
+            permissions: const [Perm.educationManage, Perm.itemsManage],
           ),
           _AdminCard(
             title: isEn ? 'Circulation & Loans' : 'የመጻሕፍት ውሰት እና ቅበላ',
@@ -207,14 +231,14 @@ class EduAdminPanelScreen extends ConsumerWidget {
             subtitle: isEn ? 'Configure sequential lesson unlocking' : 'ቅደም-ተከተላዊ የትምህርት መክፈቻ ደንቦችን ይቆጣጠሩ',
             icon: Icons.lock_open_rounded,
             route: '/edu/admin/progression-settings',
-            permission: Perm.educationManage,
+            permissions: const [Perm.educationSettings, Perm.educationManage],
           ),
           _AdminCard(
             title: isEn ? 'Reminders Management' : 'የማስታወሻዎች አስተዳደር',
             subtitle: isEn ? 'Set class and quiz reminders' : 'የትምህርት ክፍለ-ጊዜና የፈተና ማስታወሻዎች',
             icon: Icons.notifications_active_rounded,
             route: '/settings/reminders',
-            permission: null,
+            permissions: const [],
           ),
         ],
       ),
@@ -299,12 +323,20 @@ class EduAdminPanelScreen extends ConsumerWidget {
           const SizedBox(height: 20),
 
           for (final section in sections) ...[
-            _SectionHeaderWidget(section: section),
-            const SizedBox(height: 8),
-            for (final card in section.cards)
-              if (card.permission == null || user.can(card.permission!) || user.isSuperAdmin)
-                _AdminTileWidget(card: card),
-            const SizedBox(height: 18),
+            () {
+              final visibleCards = section.cards.where((c) => c.allPermissions.isEmpty || user.isSuperAdmin || user.canAny(c.allPermissions)).toList();
+              if (visibleCards.isEmpty) return const SizedBox.shrink();
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _SectionHeaderWidget(section: section),
+                  const SizedBox(height: 8),
+                  for (final card in visibleCards)
+                    _AdminTileWidget(card: card),
+                  const SizedBox(height: 18),
+                ],
+              );
+            }(),
           ],
         ],
       ),
@@ -335,7 +367,8 @@ class _AdminCard {
     required this.subtitle,
     required this.icon,
     required this.route,
-    required this.permission,
+    this.permission,
+    this.permissions = const [],
   });
 
   final String title;
@@ -343,6 +376,13 @@ class _AdminCard {
   final IconData icon;
   final String route;
   final String? permission;
+  final List<String> permissions;
+
+  List<String> get allPermissions {
+    if (permissions.isNotEmpty) return permissions;
+    if (permission != null) return [permission!];
+    return const [];
+  }
 }
 
 class _SectionHeaderWidget extends StatelessWidget {
@@ -398,21 +438,7 @@ class _AdminTileWidget extends StatelessWidget {
         borderRadius: BorderRadius.circular(14),
         child: InkWell(
           borderRadius: BorderRadius.circular(14),
-          onTap: () {
-            if (card.route == '/edu/library') {
-              Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => const LibraryBooksScreen(
-                    domain: 'timhirt',
-                    borrowingsRoute: '/edu/borrowings',
-                    fromAdmin: true,
-                  ),
-                ),
-              );
-            } else {
-              context.push(card.route);
-            }
-          },
+          onTap: () => context.push(card.route),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
             decoration: BoxDecoration(

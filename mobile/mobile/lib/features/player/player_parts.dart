@@ -109,7 +109,25 @@ class PlayerPanel extends ConsumerWidget {
         boxShadow: [BoxShadow(color: Colors.black.withValues(alpha: 0.12), blurRadius: 20, offset: const Offset(0, 6))],
       ),
       child: Column(mainAxisSize: MainAxisSize.min, children: [
-        if (isCurrent && s.error) Padding(padding: const EdgeInsets.only(bottom: 4), child: Text(l.audioError, style: context.sans(12, color: AppColors.danger))),
+        if (isCurrent && s.error)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 6),
+            child: InkWell(
+              onTap: ctrl.retry,
+              borderRadius: BorderRadius.circular(8),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.refresh_rounded, size: 14, color: AppColors.danger),
+                    const SizedBox(width: 4),
+                    Text(l.audioError, style: context.sans(12, color: AppColors.danger, weight: FontWeight.w600)),
+                  ],
+                ),
+              ),
+            ),
+          ),
         if (t != null) ...[
           SliderTheme(
             data: SliderTheme.of(context).copyWith(trackHeight: 3, thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 7), overlayShape: SliderComponentShape.noOverlay),

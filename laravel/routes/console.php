@@ -20,6 +20,12 @@ Artisan::command('mz:jobs {names?* : job names, e.g. programs:reminders} {--forc
     return 0;
 })->purpose('Run the background jobs that are due (reminders, dispatch, fines, cleanup)');
 
+Artisan::command('mz:telegram-webhook', function () {
+    $res = Jobs::telegramWebhook();
+    $this->line(json_encode($res, JSON_PRETTY_PRINT));
+    return 0;
+})->purpose('Register Telegram webhook with current PUBLIC_BASE_URL');
+
 // Creates (or re-keys) an internal system-authority account. Run on the server console only:
 //   SYSTEM_BOOTSTRAP_PASSWORD=… php artisan mz:superadmin --name="…" --phone=09XXXXXXXX [--email=x@y] [--rotate-totp]
 // The password comes from the environment (never argv, which leaks into shell history).

@@ -9,6 +9,7 @@ use DateTimeImmutable;
 use DateTimeZone;
 use Generator;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Schema;
 
 /**
  * Program occurrences, calculated, never stored (port of programSchedule.js).
@@ -20,12 +21,18 @@ final class Schedule
 {
     private const MAX_OCCURRENCES = 1000;
 
-    /** Attach each program's occurrence overrides. Accepts one program object or a list. */
-    public static function loadOverrides(object|array|null $programs): object|array|null
+    /** Attach each program's occurrence overrides. Accepts one program object, a list, or a Collection. */
+    public static function loadOverrides(mixed $programs): mixed
     {
-        $list = is_array($programs) ? $programs : [$programs];
+        $list = is_array($programs) ? $programs : ($programs instanceof \Illuminate\Support\Collection ? $programs->all() : [$programs]);
         $ids = array_values(array_filter(array_map(fn ($p) => $p?->id, $list)));
         if (! $ids) return $programs;
+        if (! Schema::hasTable('program_occurrence_overrides')) {
+            foreach ($list as $p) {
+                if ($p) $p->_overrides = [];
+            }
+            return $programs;
+        }
         $by = [];
         foreach (DB::table('program_occurrence_overrides')->whereIn('program_id', $ids)->select('program_id', 'occurrence_date', 'action', 'starts_at', 'ends_at', 'reason')->get() as $r) {
             $by[$r->program_id][Dates::toDateOnly($r->occurrence_date)] = $r;
@@ -73,25 +80,52 @@ final class Schedule
         if ($rec === 'weekly') {
             for ($d = $first; ; $d = $d->modify('+7 day')) yield $d;
         }
-        if ($rec === 'twice_monthly') {
+        if ($rec === 'biweekly' || $rec === 'every_two_weeks') {
+            for ($d = $first; ; $d = $d->modify('+14 day')) yield $d;
+        }
+        if ($rec === 'twice_monthly' || $rec === 'monthly' || $rec === 'nth_weekday') {
+            $configuredWeeks = ! empty($p->ordinal_weeks)
+                ? array_filter(array_map('intval', is_array($p->ordinal_weeks) ? $p->ordinal_weeks : explode(',', (string) $p->ordinal_weeks)), fn ($x) => $x >= 1 && $x <= 5)
+                : null;
+            $configuredWeekdays = ! empty($p->recurring_weekdays)
+                ? array_filter(array_map('intval', is_array($p->recurring_weekdays) ? $p->recurring_weekdays : explode(',', (string) $p->recurring_weekdays)), fn ($x) => $x >= 0 && $x <= 6)
+                : null;
+
+            $defaultWeekday = (int) $first->format('w');
+            $weekdays = ! empty($configuredWeekdays) ? array_values(array_unique($configuredWeekdays)) : [$defaultWeekday];
+
             $dayNum = (int) $first->format('j');
             $secondDay = $dayNum <= 15 ? min(28, $dayNum + 14) : max(1, $dayNum - 14);
             $days = array_values(array_unique([min($dayNum, $secondDay), max($dayNum, $secondDay)]));
-            $weekday = (int) $first->format('w');
             $nth = (int) ceil($dayNum / 7);
-            $nths = ($nth % 2 === 1) ? [1, 3] : [2, 4];
+            $defaultNths = $rec === 'twice_monthly' ? (($nth % 2 === 1) ? [1, 3] : [2, 4]) : [$nth];
+            $nths = ! empty($configuredWeeks) ? array_values(array_unique($configuredWeeks)) : $defaultNths;
+
             for ($m = $first->modify('first day of this month'); ; $m = $m->modify('first day of next month')) {
-                if (($p->monthly_rule ?? null) === 'nth_weekday') {
-                    foreach ($nths as $n) {
-                        $d = $m;
-                        while ((int) $d->format('w') !== $weekday) $d = $d->modify('+1 day');
-                        $target = $d->modify('+' . (7 * ($n - 1)) . ' day');
-                        if ($target->format('m') === $m->format('m')) yield $target;
+                if (($p->monthly_rule ?? null) === 'nth_weekday' || $rec === 'nth_weekday') {
+                    $monthDates = [];
+                    foreach ($weekdays as $w) {
+                        foreach ($nths as $n) {
+                            $d = $m;
+                            while ((int) $d->format('w') !== $w) $d = $d->modify('+1 day');
+                            $target = $d->modify('+' . (7 * ($n - 1)) . ' day');
+                            if ($target->format('m') === $m->format('m')) {
+                                $monthDates[] = $target;
+                            }
+                        }
+                    }
+                    usort($monthDates, fn ($a, $b) => $a <=> $b);
+                    foreach ($monthDates as $t) {
+                        yield $t;
                     }
                 } else {
                     $dim = (int) $m->format('t');
-                    foreach ($days as $dn) {
-                        yield $m->setDate((int) $m->format('Y'), (int) $m->format('m'), min($dn, $dim));
+                    if ($rec === 'twice_monthly') {
+                        foreach ($days as $dn) {
+                            yield $m->setDate((int) $m->format('Y'), (int) $m->format('m'), min($dn, $dim));
+                        }
+                    } else {
+                        yield $m->setDate((int) $m->format('Y'), (int) $m->format('m'), min($dayNum, $dim));
                     }
                 }
             }
@@ -105,22 +139,6 @@ final class Schedule
             for ($d = $first; ; $d = $d->modify('+1 day')) {
                 $e = Ethiopian::ethiopianOfDate($d->format('Y-m-d'));
                 if ($e['month'] !== 13 && isset($days[$e['day']])) yield $d; // ጳጉሜ is not a regular month
-            }
-        }
-        // monthly
-        $dayNum = (int) $first->format('j');
-        $weekday = (int) $first->format('w');
-        $nth = (int) ceil($dayNum / 7);
-        for ($m = $first->modify('first day of this month'); ; $m = $m->modify('first day of next month')) {
-            if (($p->monthly_rule ?? null) === 'nth_weekday') {
-                $d = $m;
-                while ((int) $d->format('w') !== $weekday) $d = $d->modify('+1 day');
-                $target = $d->modify('+' . (7 * ($nth - 1)) . ' day');
-                if ($target->format('m') !== $m->format('m')) $target = $target->modify('-7 day'); // "5th" → last
-                yield $target;
-            } else {
-                $dim = (int) $m->format('t');
-                yield $m->setDate((int) $m->format('Y'), (int) $m->format('m'), min($dayNum, $dim));
             }
         }
     }
@@ -139,16 +157,26 @@ final class Schedule
         $until = ! empty($p->recurrence_until) ? Dates::toDateOnly($p->recurrence_until) : null;
         $scanned = 0;
         $overrides = $p->_overrides ?? [];
+        $seen = [];
         foreach (self::candidateDates($p, $tz) as $d) {
             $date = $d->format('Y-m-d');
+            if (isset($seen[$date])) continue;
+            $seen[$date] = true;
             if ($date < $first) continue;
             if ($date > $to || ($until && $date > $until) || count($out) >= self::MAX_OCCURRENCES || ++$scanned > self::MAX_OCCURRENCES * 31) break;
             if ($date >= $from) {
                 $ov = $overrides[$date] ?? null;
-                if ($ov && $ov->action === 'cancelled') {
+                if ($ov && ($ov->action === 'cancelled' || $ov->action === 'suspended')) {
                     if ($includeCancelled) {
                         $s = self::atLocal($date, $time, $tz);
-                        $out[] = ['date' => $date, 'starts_at' => $s, 'ends_at' => self::plusMs($s, $durationMs), 'cancelled' => true, 'reason' => $ov->reason ?? null];
+                        $out[] = [
+                            'date' => $date,
+                            'starts_at' => $s,
+                            'ends_at' => self::plusMs($s, $durationMs),
+                            'cancelled' => $ov->action === 'cancelled',
+                            'suspended' => $ov->action === 'suspended',
+                            'reason' => $ov->reason ?? null,
+                        ];
                     }
                     continue;
                 }
@@ -164,9 +192,9 @@ final class Schedule
         return $out;
     }
 
-    public static function on(object $p, string $date, ?string $tz = null): ?array
+    public static function on(object $p, string $date, ?string $tz = null, bool $includeCancelled = false): ?array
     {
-        return self::between($p, $date, $date, $tz)[0] ?? null;
+        return self::between($p, $date, $date, $tz, $includeCancelled)[0] ?? null;
     }
 
     public static function next(object $p, ?\DateTimeInterface $now = null, ?string $tz = null): ?array

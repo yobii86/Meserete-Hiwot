@@ -82,6 +82,21 @@ def deploy():
     ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
     ssh.connect(SERVER_HOST, port=SSH_PORT, username=SSH_USER, password=SSH_PASS, timeout=60, banner_timeout=60, auth_timeout=60)
     
+    # Pre-deployment database backup
+    print('Creating pre-deployment database backup on server...')
+    backup_cmd = (
+        f'mkdir -p /home/{SSH_USER}/backups && '
+        f'BACKUP_FILE="/home/{SSH_USER}/backups/{DB_NAME}_predeploy_$(date +%Y%m%d_%H%M%S).sql" && '
+        f'mysqldump -u {DB_USER} -p"{DB_PASS}" {DB_NAME} > "$BACKUP_FILE" && '
+        f'ls -lh "$BACKUP_FILE"'
+    )
+    stdin, stdout, stderr = ssh.exec_command(backup_cmd)
+    backup_out = stdout.read().decode('utf-8', errors='replace').strip()
+    backup_err = stderr.read().decode('utf-8', errors='replace').strip()
+    if backup_err and 'Deprecated program name' not in backup_err:
+        print('Database backup notice/warning:', backup_err)
+    print('Database backup result:', backup_out)
+
     # Ensure vendor dependencies exist without duplicating
     print('Checking vendor dependencies on server...')
     ssh.exec_command(f'rm -rf {TARGET_DIR}/vendor/vendor')
@@ -153,6 +168,10 @@ FILESYSTEM_DISK=local
 QUEUE_CONNECTION=sync
 CACHE_STORE=file
 
+CACHE_EDU_DASHBOARD=true
+EDU_STRICT_CURRICULUM_GATE=true
+EDU_UNIFIED_QUIZ_BUILDER=true
+
 MEMCACHED_HOST=127.0.0.1
 REDIS_CLIENT=phpredis
 REDIS_HOST=127.0.0.1
@@ -187,10 +206,10 @@ SYSTEM_ACCESS_TTL=10m
 SYSTEM_REFRESH_TTL_HOURS=0
 SYSTEM_ALLOWED_IPS=
 
-# --- Firebase Cloud Messaging (server credentials; backend only) ---
-FIREBASE_PROJECT_ID=mezmur-zelideta
-FIREBASE_CLIENT_EMAIL=firebase-adminsdk-fbsvc@mezmur-zelideta.iam.gserviceaccount.com
-FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEFAASCBKYwggSiAgEAAoIBAQCuvQvFpSLmahOS\\nQOuCFjc9usYTYmWIs9ZjNSJ15GULhRnTVmrxGZ938Ojn7FdiNrNot49NbH0XP59O\\n5fvKEqLzgAOTwoSox5c4Dbbom2gZyaia+5V7ijQLkNQQaC5YVQt0No74Lbavv3M/\\nOtxt8WkDeOx5FZtrHMe06y8LgP/XhRDM7lf47Bvpa0JNImAIEFjevPJkjM381Yz3\\n9eWSQicRi2aoEDxm246sUdT5HwBZi3pHSqvZxipQz/gK54heH+xJlROYiPiYXJwO\\nPtJ+t3tRaa3ASnSznd9Ls4zF4/oyBhzNnW4kfkZjs8XwYU/1McED3vluFdekX2NE\\nMAwJ1z6HAgMBAAECggEAIs/d5wfhvpbWhFYztSx43+70ZEs/oC734LbmwSb57IQd\\nY4m9b4Aj0ZDozb+7nwD32D5tqcaZ20ZdFipicd0poqpXzBm+NSPiYBP3YzsGz9Bp\\nq0rA+qZLfRxi60veI9H5oLL348CzuyrAqpGu9aZZPgxazDq+RmYq8UPDkR6nmceA\\nCg0nKZbcW362WJPePAVeUts5BO1urec7MYoidBUq2FiyWVyRdAniy1j5+cZmO+0P\\nQayImlZCa7ya3PG0RT+FhwX0AdMRQbLu36U8qrHi33WF8dgHjBd4Hz4pXPWACsL2\\nz+MHZtPXpur8f2Isfy508G/pkpLV23Zw2dXD6kM3TQKBgQDXgNaSFQfBafNAlU4H\\nxgPqs7tzViuJizrPNfym8ssV6yAazJE6XAq5QwN4WqULWCnamfDTdbFvJG+Ayz10\\nuWdLbbaEFaAwKPj/JGsGOd3wQ4dP9OO3VpFC48nu1cMb810HIJ02uBZylxstbDM5\\nLhzMYhFbkgFReSJuXm+r/8BP4wKBgQDPkyUrlmJ8qoZLKRrxm3Ry8p1slVYl5i4g\\nOB6YpQV3BLk4ixRKStOF6OnefdK/Yif8MEqOXe1TXRmVj287TLqI3mOnJu5UhcbV\\nTUW4BCKyJ2Agzy0bVoALJIHzwYFiUCFaZsz/QwKdrbPP46nIXKfM8IdQsj2NpKYx\\nCWyeWacQDQKBgF/fbZYnzP97B0EgK0rCCVQNCcPR/iR+0HcG6ZPMSBVEOVAy2hlA\\ngXTSH2UXzn0xh8081yr8HSf46bI+uOSI5y9ja+NvS4ihccTwiryGWfpd0ID9zaDu\\n3kkH1fpvFxIEPsrA87A4TaRFHU4j6NXzcdRrfJVkazm3zl2TndLDQOdJAoGAAjHn\\nIbfcYL8Y3nCX1Vg0egawvXYyzAHMGREe2bRdA24sWzm1RDfYVsEov+6KrPVnwNXt\\n4+WAXfJNE/TJU1IzYsEfQqQ5vvEPMjA3/YMlrsaV0KMAMhrPDc8cBKzWJmj8gU02\\n+7gErhApJ5ibsf+w0oz0kVjhJ79G9pvH50DBcH0CgYBMWM1zcQ6HElzoNzxjvK2D\\nyygt1u3lOuknWFhPBTP/s3lcbvMJ6OdeNpcNUvMjFOZHv130lnVQh3APdy6TFoIo\\nV+mk+3wNY5d6BGNaeVc/uvQq+Ww7t2AIStj/uFH6ZBiQuq17DlMCZdUlAoYJy5Cx\\nEwSkWWQ9RgdJFmgimgt9Ew==\\n-----END PRIVATE KEY-----\\n"
+# --- Telegram Bot ---
+TELEGRAM_BOT_TOKEN=8968084381:AAHYqefEFupGnIjuOGKWslfZayHUogHORmc
+TELEGRAM_BOT_USERNAME=Mezmure_Zelideta_bot
+TELEGRAM_WEBHOOK_SECRET=www
 '''
     sftp = ssh.open_sftp()
     with sftp.file(f'{TARGET_DIR}/.env', 'w') as f:
@@ -199,7 +218,7 @@ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEF
     
     # Fix directory permissions & storage symlink
     print('Ensuring directory permissions and storage symlink...')
-    ssh.exec_command(f'mkdir -p {TARGET_DIR}/storage/framework/views {TARGET_DIR}/storage/framework/cache {TARGET_DIR}/storage/framework/sessions {TARGET_DIR}/storage/logs {TARGET_DIR}/bootstrap/cache {TARGET_DIR}/storage/mz/public')
+    ssh.exec_command(f'mkdir -p {TARGET_DIR}/storage/framework/views {TARGET_DIR}/storage/framework/cache {TARGET_DIR}/storage/framework/sessions {TARGET_DIR}/storage/logs {TARGET_DIR}/bootstrap/cache {TARGET_DIR}/storage/mz/public {TARGET_DIR}/resources/views')
     ssh.exec_command(f'chmod -R 775 {TARGET_DIR}/storage {TARGET_DIR}/bootstrap/cache')
     ssh.exec_command(f'chmod -R 777 {TARGET_DIR}/storage/mz/public')
     ssh.exec_command(f'[ -L {TARGET_DIR}/public/files ] || ln -s ../storage/mz/public {TARGET_DIR}/public/files')
@@ -217,33 +236,46 @@ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEF
                 sha256_hash.update(byte_block)
         apk_sha256 = sha256_hash.hexdigest()
         
-        sftp = ssh.open_sftp()
-        last_pct = [0]
-        def progress_callback(transferred, total):
-            pct = int((transferred / total) * 100)
-            if pct >= last_pct[0] + 10 or pct == 100:
-                print(f'  APK upload progress: {pct}% ({transferred:,} / {total:,} bytes)')
-                last_pct[0] = pct
-        sftp.put(apk_path, f'{TARGET_DIR}/public/app-release.apk', callback=progress_callback)
-        sftp.chmod(f'{TARGET_DIR}/public/app-release.apk', 0o644)
-        
-        # Also copy to private/releases for download system
+        # Check if APK is already on server with matching size
+        remote_apk = f'{TARGET_DIR}/public/app-release.apk'
+        stdin, stdout, stderr = ssh.exec_command(f'[ -f {remote_apk} ] && stat -c %s {remote_apk} || echo 0')
+        remote_size_str = stdout.read().decode('utf-8', errors='replace').strip()
+        remote_size = int(remote_size_str) if remote_size_str.isdigit() else 0
+
+        if remote_size == apk_size:
+            print(f'Remote APK already matches local size ({apk_size:,} bytes). Skipping SFTP upload.')
+        else:
+            print(f'Uploading {apk_path} ({apk_size:,} bytes) to public/app-release.apk...')
+            sftp = ssh.open_sftp()
+            last_pct = [0]
+            def progress_callback(transferred, total):
+                pct = int((transferred / total) * 100)
+                if pct >= last_pct[0] + 10 or pct == 100:
+                    print(f'  APK upload progress: {pct}% ({transferred:,} / {total:,} bytes)')
+                    last_pct[0] = pct
+            sftp.put(apk_path, remote_apk, callback=progress_callback)
+            sftp.chmod(remote_apk, 0o644)
+            sftp.close()
+
+        # Copy to private/releases on server locally (instant, no extra network overhead)
         print('Ensuring private releases directory exists...')
         ssh.exec_command(f'mkdir -p {TARGET_DIR}/storage/mz/private/releases')
-        remote_release_path = 'private/releases/release-1.5.3-27.apk'
-        print(f'Uploading to {TARGET_DIR}/storage/mz/{remote_release_path}...')
-        sftp.put(apk_path, f'{TARGET_DIR}/storage/mz/{remote_release_path}')
-        sftp.chmod(f'{TARGET_DIR}/storage/mz/{remote_release_path}', 0o644)
-        sftp.close()
-        print('APK upload complete.')
+        remote_release_path = 'private/releases/release-1.5.3-38.apk'
+        print(f'Copying APK to {TARGET_DIR}/storage/mz/{remote_release_path} on server...')
+        stdin, stdout, stderr = ssh.exec_command(
+            f'cp {remote_apk} {TARGET_DIR}/storage/mz/{remote_release_path} && chmod 644 {TARGET_DIR}/storage/mz/{remote_release_path}'
+        )
+        stdout.channel.recv_exit_status()
+        print('APK setup complete.')
 
-        # Register in app_releases table
-        print('Registering release 1.5.3+27 in app_releases database table...')
-        notes = "Quiz attempt limits enforcement, direct course materials without lessons, canonical grade access separation, Google Classroom assignments & teacher announcements."
+        # Register in app_releases table (NOT forced update: is_mandatory=0, min_supported_code=0)
+        print('Registering release 1.5.3+38 in app_releases database table (non-forced update)...')
+        notes = "Release 1.5.3+38: Full Master Prompt UI/UX release - Universal Quiz Builder, Curriculum Explorer, Admin Grade Explorer, fast calendar attendance actions, dedicated physical/digital library books, and attendance dashboard fixes."
         sql = (
+            f"UPDATE app_releases SET is_mandatory=0, min_supported_code=0 WHERE platform='android'; "
             f"INSERT INTO app_releases (platform, version_name, version_code, file_path, file_size, sha256, release_notes, min_supported_code, is_mandatory, is_published, download_count, created_at) "
-            f"VALUES ('android', '1.5.3', 27, '{remote_release_path}', {apk_size}, '{apk_sha256}', '{notes}', 26, 0, 1, 0, NOW()) "
-            f"ON DUPLICATE KEY UPDATE version_name='1.5.3', file_path='{remote_release_path}', file_size={apk_size}, sha256='{apk_sha256}', release_notes='{notes}', min_supported_code=26, is_mandatory=0, is_published=1;"
+            f"VALUES ('android', '1.5.3', 38, '{remote_release_path}', {apk_size}, '{apk_sha256}', '{notes}', 0, 0, 1, 0, NOW()) "
+            f"ON DUPLICATE KEY UPDATE version_name='1.5.3', file_path='{remote_release_path}', file_size={apk_size}, sha256='{apk_sha256}', release_notes='{notes}', min_supported_code=0, is_mandatory=0, is_published=1;"
         )
         cmd = f"mysql -u {DB_USER} -p'{DB_PASS}' {DB_NAME} -e \"{sql}\""
         stdin, stdout, stderr = ssh.exec_command(cmd)
@@ -252,7 +284,7 @@ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEF
         if err and 'Deprecated program name' not in err:
             print('Release DB registration warning/error:', err)
         else:
-            print('Release 1.5.3+26 registered successfully in database.')
+            print('Release 1.5.3+38 registered successfully in database (force_update disabled).')
     
     # Run migrations and seeders
     print('Running migrations, cache clears and GuidanceSeeder on server...')
@@ -264,7 +296,11 @@ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEF
         'php artisan view:clear && '
         'php artisan optimize:clear && '
         'php artisan migrate --force && '
-        'php artisan db:seed --class=GuidanceSeeder --force'
+        'php artisan db:seed --class=GuidanceSeeder --force && '
+        'php artisan mz:telegram-webhook && '
+        'php artisan config:cache && '
+        'php artisan route:cache && '
+        'php artisan view:cache'
     )
     stdin, stdout, stderr = ssh.exec_command(artisan_cmd)
     print('Artisan output:\n', stdout.read().decode('utf-8', errors='replace'))
@@ -280,8 +316,15 @@ FIREBASE_PRIVATE_KEY="-----BEGIN PRIVATE KEY-----\\nMIIEvAIBADANBgkqhkiG9w0BAQEF
     stdin, stdout, stderr = ssh.exec_command(f'curl -sI -k https://app.{SERVER_HOST}/')
     print('CURL / (root):\n', stdout.read().decode('utf-8', errors='replace'))
 
-    stdin, stdout, stderr = ssh.exec_command(f'curl -s -k https://app.{SERVER_HOST}/api/v1/app/version?version_code=26')
-    print('CURL /api/v1/app/version:\n', stdout.read().decode('utf-8', errors='replace'))
+    for vcode in [0, 26, 33, 37]:
+        stdin, stdout, stderr = ssh.exec_command(f'curl -s -k "https://app.{SERVER_HOST}/api/v1/app/version?version_code={vcode}"')
+        print(f'CURL /api/v1/app/version (v={vcode}):\n', stdout.read().decode('utf-8', errors='replace'))
+
+    stdin, stdout, stderr = ssh.exec_command(f'curl -s -k https://app.{SERVER_HOST}/api/v1/sinksar/today')
+    print('CURL /api/v1/sinksar/today:\n', stdout.read().decode('utf-8', errors='replace')[:400])
+
+    stdin, stdout, stderr = ssh.exec_command(f'curl -sI -k https://app.{SERVER_HOST}/public/app-release.apk')
+    print('CURL /public/app-release.apk:\n', stdout.read().decode('utf-8', errors='replace'))
     
     ssh.close()
     print('Deployment completed successfully!')

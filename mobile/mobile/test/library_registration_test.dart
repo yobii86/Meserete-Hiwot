@@ -56,7 +56,7 @@ void main() {
 
     test('book request notifications and registrations open the right page', () {
       expect(routeForEntity('library_request', 12), '/library-request/12');
-      expect(routeForEntity('edu_class', 3), '/edu/class/3');
+      expect(routeForEntity('edu_class', 3), '/edu/classes');
     });
 
     test('downloaded books are kept encrypted and open only with this install\'s key', () {

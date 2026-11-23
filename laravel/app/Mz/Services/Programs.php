@@ -18,7 +18,7 @@ use Illuminate\Support\Facades\Schema;
 final class Programs
 {
     public const ACTIVE_PARTICIPANT = ['invited', 'registered'];
-    private const UPDATABLE = ['title', 'description', 'location', 'starts_at', 'ends_at', 'requires_registration', 'requires_attendance', 'capacity', 'audience', 'status', 'reminder_enabled', 'reminder_days_before', 'reminder_title', 'reminder_body', 'is_additional', 'counts_for_selection', 'is_mandatory_reminder', 'reminder_interval_days', 'reminder_interval_start', 'schedule_id'];
+    private const UPDATABLE = ['title', 'description', 'location', 'starts_at', 'ends_at', 'requires_registration', 'requires_attendance', 'capacity', 'audience', 'status', 'reminder_enabled', 'reminder_days_before', 'reminder_title', 'reminder_body', 'is_additional', 'counts_for_selection', 'is_mandatory_reminder', 'reminder_interval_days', 'reminder_interval_start', 'schedule_id', 'ordinal_weeks', 'recurring_weekdays'];
 
     /** Offsets (minutes before the start) as stored: "1440,60". */
     public static function offsetsOf(?string $csv): array
@@ -46,10 +46,10 @@ final class Programs
         return $start < $today ? $start : $today;
     }
 
-    /** A program without an end time ends at the end of its (local) start day. */
     public static function endOfDay(mixed $startsAt): string
     {
-        return Dates::sql(Dates::fromLocal(Dates::localDateOf(Dates::of($startsAt)) . ' 23:59:59'));
+        $d = $startsAt ? Dates::of($startsAt) : Dates::now();
+        return Dates::sql(Dates::fromLocal(Dates::localDateOf($d) . ' 23:59:59'));
     }
 
     /** ends_at / has_end_time for a create or an update (null or missing = no end time). */
@@ -73,6 +73,7 @@ final class Programs
         $out = ['date' => $o['date'], 'starts_at' => $o['starts_at'], 'ends_at' => $o['ends_at']];
         if (! empty($o['rescheduled'])) $out['rescheduled'] = true;
         if (! empty($o['cancelled'])) $out['cancelled'] = true;
+        if (! empty($o['suspended'])) $out['suspended'] = true;
         return $out;
     }
 
@@ -99,6 +100,8 @@ final class Programs
             'member_groups' => $p->member_groups ? array_values(array_filter(explode(',', $p->member_groups))) : [],
             'recurrence' => $p->recurrence ?? 'once',
             'monthly_rule' => $p->monthly_rule ?? null,
+            'ordinal_weeks' => ! empty($p->ordinal_weeks) ? array_map('intval', explode(',', $p->ordinal_weeks)) : null,
+            'recurring_weekdays' => isset($p->recurring_weekdays) && $p->recurring_weekdays !== null && $p->recurring_weekdays !== '' ? array_map('intval', explode(',', $p->recurring_weekdays)) : null,
             'ethiopian_days' => $p->ethiopian_days ? array_map('intval', explode(',', $p->ethiopian_days)) : null,
             'recurrence_until' => Dates::toDateOnly($p->recurrence_until ?? null),
             'is_additional' => (bool) ($p->is_additional ?? false),
@@ -198,7 +201,11 @@ final class Programs
         $out['class_ids'] = $classIds;
         $out['courses'] = $courses;
         $out['course_ids'] = $courseIds;
-        $out['is_education'] = ! empty($classes) || ! empty($courses) || ! empty($out['schedule_id']);
+        $catIsEdu = false;
+        if (! empty($p->category_id) && Schema::hasTable('program_categories') && Schema::hasColumn('program_categories', 'is_education')) {
+            $catIsEdu = (bool) DB::table('program_categories')->where('id', $p->category_id)->value('is_education');
+        }
+        $out['is_education'] = $catIsEdu || ! empty($classes) || ! empty($courses) || ! empty($out['schedule_id']);
 
         return $out;
     }
@@ -323,6 +330,16 @@ final class Programs
         if ($categoryId) $qb->where('p.category_id', $categoryId);
         $rows = $qb->get()->all();
         Schedule::loadOverrides($rows);
+        $attendanceByOcc = [];
+        if ($auth && ! empty($rows)) {
+            $programIds = array_map(fn ($r) => $r->id, $rows);
+            foreach (\Illuminate\Support\Facades\DB::table('attendance')->where('user_id', $auth->id)->whereIn('program_id', $programIds)->whereBetween('occurrence_date', [$from, $to])->get(['program_id', 'occurrence_date', 'status']) as $att) {
+                $dOnly = Dates::toDateOnly($att->occurrence_date);
+                $attendanceByOcc[$att->program_id . ':' . $dOnly] = $att->status === 'late' ? 'present' : $att->status;
+            }
+        }
+        $todayLocal = Dates::todayLocal();
+        $nowLocal = Dates::now();
         $out = [];
         foreach ($rows as $p) {
             $s = self::serialize($p);
@@ -344,7 +361,7 @@ final class Programs
                     'is_education' => ! empty($s['is_education']),
                     'classes' => $s['classes'],
                     'requires_attendance' => (bool) $p->requires_attendance,
-                    'my_attendance' => $p->my_attendance ?? null,
+                    'my_attendance' => ! empty($o['suspended']) ? 'suspended' : (! empty($o['cancelled']) ? 'cancelled' : ($auth ? ($attendanceByOcc[$p->id . ':' . $o['date']] ?? ($o['ends_at'] < $nowLocal ? 'absent' : ($o['date'] === $todayLocal ? 'today' : 'upcoming'))) : null)),
                     'ethiopian_date' => ($monthNames[$eth['month']] ?? '') . " {$eth['day']}፣ {$eth['year']} ዓ.ም",
                     'ethiopian' => $eth,
                 ] + self::occ($o);
@@ -354,11 +371,69 @@ final class Programs
         return $out;
     }
 
+    /** Preview upcoming occurrences for a program schedule before saving. */
+    public static function previewSchedule(array $input): array
+    {
+        $startsAt = $input['starts_at'] ?? now()->toIso8601String();
+        $endsAt = $input['ends_at'] ?? self::endOfDay($startsAt);
+        $recurrence = $input['recurrence'] ?? 'once';
+        $from = Dates::localDateOf(Dates::of($startsAt));
+        $maxTo = Dates::addDays($from, 365);
+        $until = ! empty($input['recurrence_until']) ? Dates::toDateOnly($input['recurrence_until']) : null;
+        $to = $recurrence === 'once' ? $from : ($until && $until < $maxTo ? $until : $maxTo);
+
+        $ordinalWeeks = null;
+        if (! empty($input['ordinal_weeks'])) {
+            $w = is_array($input['ordinal_weeks']) ? $input['ordinal_weeks'] : explode(',', (string) $input['ordinal_weeks']);
+            $ordinalWeeks = implode(',', array_filter(array_map('intval', (array) $w), fn ($x) => $x >= 1 && $x <= 5));
+        }
+
+        $recurringWeekdays = null;
+        if (isset($input['recurring_weekdays'])) {
+            $wds = is_array($input['recurring_weekdays']) ? $input['recurring_weekdays'] : explode(',', (string) $input['recurring_weekdays']);
+            $recurringWeekdays = implode(',', array_filter(array_map('intval', (array) $wds), fn ($x) => $x >= 0 && $x <= 6));
+        }
+
+        $candidate = (object) [
+            'starts_at' => Dates::sql(Dates::of($startsAt)),
+            'ends_at' => Dates::sql(Dates::of($endsAt)),
+            'recurrence' => $recurrence,
+            'monthly_rule' => $input['monthly_rule'] ?? null,
+            'ordinal_weeks' => $ordinalWeeks,
+            'recurring_weekdays' => $recurringWeekdays,
+            'recurrence_until' => $until,
+            'ethiopian_days' => ! empty($input['ethiopian_days']) ? (is_array($input['ethiopian_days']) ? implode(',', $input['ethiopian_days']) : $input['ethiopian_days']) : null,
+            '_overrides' => [],
+        ];
+
+        $occs = Schedule::between($candidate, $from, $to, null, false);
+        $items = array_map(function ($o) {
+            $date = $o['date'];
+            [$y, $m, $d] = array_map('intval', explode('-', substr($date, 0, 10)));
+            $eth = \App\Mz\Support\EthiopianCalendar::fromGregorian($y, $m, $d);
+            $dayOfWeek = (new \DateTimeImmutable($date))->format('l');
+            return [
+                'date' => $date,
+                'starts_at' => Dates::iso($o['starts_at']),
+                'ends_at' => Dates::iso($o['ends_at']),
+                'ethiopian_date' => $eth['formatted'] ?? '',
+                'weekday_en' => $dayOfWeek,
+            ];
+        }, $occs);
+
+        return [
+            'total' => count($items),
+            'from' => $from,
+            'to' => $to,
+            'occurrences' => $items,
+        ];
+    }
+
     /** Check for overlapping programs (warning only, never blocks authorized administrators). */
     public static function checkOverlap(array $input): array
     {
         $startsAt = $input['starts_at'];
-        $endsAt = $input['ends_at'] ?? self::endOfDay($startsAt);
+        $endsAt = ! empty($input['ends_at']) ? $input['ends_at'] : Dates::sql(Dates::of($startsAt)->modify('+2 hours'));
         $recurrence = $input['recurrence'] ?? 'once';
         $location = trim($input['location'] ?? '');
         $excludeId = $input['exclude_program_id'] ?? null;
@@ -406,7 +481,7 @@ final class Programs
             foreach ($existOccs as $eo) {
                 if (empty($candByDate[$eo['date']])) continue;
                 $eStarts = Dates::of($eo['starts_at']);
-                $eEnds = Dates::of($eo['ends_at']);
+                $eEnds = empty($ep->has_end_time) ? Dates::of($eo['starts_at'])->modify('+2 hours') : Dates::of($eo['ends_at']);
 
                 foreach ($candByDate[$eo['date']] as $co) {
                     $cStarts = Dates::of($co['starts_at']);
@@ -461,11 +536,13 @@ final class Programs
         return array_map(function ($o) use ($today, $closures, $now) {
             $ld = Schedule::localDate($o['starts_at']);
             $cancelled = ! empty($o['cancelled']);
+            $suspended = ! empty($o['suspended']);
             return self::occ($o) + [
                 'reason' => $o['reason'] ?? null,
                 'today' => $ld === $today,
-                'active' => ! $cancelled && $ld <= $today,
-                'closed' => ! $cancelled && ($o['ends_at'] < $now || isset($closures[$o['date']])),
+                'active' => ! $cancelled && ! $suspended && $ld <= $today,
+                'closed' => ! $cancelled && ! $suspended && ($o['ends_at'] < $now || isset($closures[$o['date']])),
+                'suspended' => $suspended,
             ];
         }, Schedule::between($p, $from, $to, null, true));
     }
@@ -479,10 +556,16 @@ final class Programs
         $o = Schedule::between($p, $date, $date, null, true)[0] ?? null;
         if (! $o) throw ApiError::field('date', 'NOT_AN_OCCURRENCE');
         $previous = $p->_overrides[$date] ?? null;
-        $action = $in['action'];
+        $action = $in['action'] === 'unsuspend' ? 'restore' : $in['action'];
         $startsAt = $in['starts_at'] ?? null;
         $endsAt = $in['ends_at'] ?? null;
         $reason = $in['reason'] ?? null;
+        if ($action === 'suspended') {
+            $today = Dates::todayLocal();
+            if ($date < $today) {
+                throw ApiError::badRequest('PAST_OCCURRENCE_CANNOT_BE_SUSPENDED', 'Cannot suspend a past occurrence');
+            }
+        }
         if ($action === 'rescheduled') {
             if (! $startsAt) throw ApiError::field('starts_at', 'REQUIRED');
             if (! $endsAt) $endsAt = self::endOfDay($startsAt);
@@ -492,9 +575,15 @@ final class Programs
         DB::transaction(function () use ($actx, $id, $date, $action, $startsAt, $endsAt, $reason, $previous) {
             if ($action === 'restore') {
                 DB::table('program_occurrence_overrides')->where(['program_id' => $id, 'occurrence_date' => $date])->delete();
+                if (Schema::hasTable('attendance_sessions')) {
+                    DB::table('attendance_sessions')->where(['program_id' => $id, 'occurrence_date' => $date, 'status' => 'suspended'])->update(['status' => 'scheduled']);
+                }
             } else {
                 $row = ['action' => $action, 'starts_at' => $action === 'rescheduled' ? Dates::sql($startsAt) : null, 'ends_at' => $action === 'rescheduled' ? Dates::sql($endsAt) : null, 'reason' => $reason, 'changed_by' => $actx['auth']->id];
                 DB::table('program_occurrence_overrides')->upsert([['program_id' => $id, 'occurrence_date' => $date] + $row], ['program_id', 'occurrence_date'], array_keys($row));
+                if (Schema::hasTable('attendance_sessions') && $action === 'suspended') {
+                    DB::table('attendance_sessions')->where(['program_id' => $id, 'occurrence_date' => $date])->whereNotIn('status', ['ended', 'suspended'])->update(['status' => 'suspended']);
+                }
             }
             Audit::log($actx, Audit::PROGRAM_OCCURRENCE, 'program', $id, [
                 'date' => $date,
@@ -508,9 +597,22 @@ final class Programs
         // One day cancelled / moved: everyone who expects that day hears about it (not only invitees).
         if ($action !== 'restore' && $p->status === 'published') {
             $params = ['date' => \App\Mz\Services\ReportExport::ethiopianDate($date . ' 12:00:00'), 'reason' => (string) $reason, 'new_time' => $startsAt ? \App\Mz\Notifications\Mailer::when($startsAt) : ''];
-            self::announce($id, $action === 'cancelled' ? 'occurrence_cancelled' : 'occurrence_moved', $actx['auth']->id, $params, "$date:$action:" . \App\Mz\Projects\Pm::stamp());
+            $announceKind = match ($action) {
+                'cancelled' => 'occurrence_cancelled',
+                'suspended' => 'occurrence_suspended',
+                default => 'occurrence_moved',
+            };
+            self::announce($id, $announceKind, $actx['auth']->id, $params, "$date:$action:" . \App\Mz\Projects\Pm::stamp());
         }
-        return self::occurrences($id, $date, $date);
+        $occs = self::occurrences($id, $date, $date);
+        $res = $occs;
+        $res['success'] = true;
+        $res['action'] = $action;
+        $res['date'] = $date;
+        $res['message'] = $action === 'suspended' ? 'Program occurrence successfully suspended for today' : ($action === 'restore' ? 'Program occurrence restored' : 'Occurrence updated');
+        $res['occurrences'] = $occs;
+        $res['occurrence'] = $occs[0] ?? null;
+        return $res;
     }
 
     public static function detail(int $id, ?AuthContext $auth, bool $admin = false): array
@@ -558,7 +660,12 @@ final class Programs
 
     private static function assertDates(mixed $startsAt, mixed $endsAt): void
     {
-        if (Dates::of($endsAt) <= Dates::of($startsAt)) throw ApiError::field('ends_at', 'END_BEFORE_START');
+        $s = Dates::of($startsAt);
+        $e = Dates::of($endsAt);
+        if ($e <= $s) throw ApiError::field('ends_at', 'END_BEFORE_START');
+        if (Dates::ms($e) - Dates::ms($s) > 86400 * 1000) {
+            throw ApiError::field('ends_at', 'MAX_ONE_DAY_DURATION');
+        }
     }
 
     /** Normalise recurrence fields and check category / end date. $current = the stored row on update. */
@@ -573,10 +680,26 @@ final class Programs
             $out['category_id'] = $input['category_id'];
         }
         $recurrence = $merged['recurrence'] ?? 'once';
-        if (array_key_exists('recurrence', $input) || array_key_exists('monthly_rule', $input) || array_key_exists('recurrence_until', $input) || array_key_exists('ethiopian_days', $input)) {
+        if (array_key_exists('recurrence', $input) || array_key_exists('monthly_rule', $input) || array_key_exists('recurrence_until', $input) || array_key_exists('ethiopian_days', $input) || array_key_exists('ordinal_weeks', $input) || array_key_exists('recurring_weekdays', $input)) {
             $out['recurrence'] = $recurrence;
             // Monthly and twice-a-month programs: on a day of the month, or on the nth weekday (1st & 3rd / 2nd & 4th).
             $out['monthly_rule'] = in_array($recurrence, ['monthly', 'twice_monthly'], true) ? ($merged['monthly_rule'] ?? 'day_of_month') : null;
+            if (array_key_exists('ordinal_weeks', $input)) {
+                $weeks = is_array($input['ordinal_weeks']) ? $input['ordinal_weeks'] : (is_string($input['ordinal_weeks']) ? explode(',', $input['ordinal_weeks']) : []);
+                $weeks = array_values(array_unique(array_filter(array_map('intval', (array) $weeks), fn ($w) => $w >= 1 && $w <= 5)));
+                sort($weeks);
+                $out['ordinal_weeks'] = ! empty($weeks) ? implode(',', $weeks) : null;
+            } elseif (array_key_exists('ordinal_weeks', $current)) {
+                $out['ordinal_weeks'] = $current['ordinal_weeks'];
+            }
+            if (array_key_exists('recurring_weekdays', $input)) {
+                $wds = is_array($input['recurring_weekdays']) ? $input['recurring_weekdays'] : (is_string($input['recurring_weekdays']) ? explode(',', $input['recurring_weekdays']) : []);
+                $wds = array_values(array_unique(array_filter(array_map('intval', (array) $wds), fn ($w) => $w >= 0 && $w <= 6)));
+                sort($wds);
+                $out['recurring_weekdays'] = ! empty($wds) ? implode(',', $wds) : null;
+            } elseif (array_key_exists('recurring_weekdays', $current)) {
+                $out['recurring_weekdays'] = $current['recurring_weekdays'];
+            }
             if ($recurrence === 'ethiopian_days') {
                 $days = array_key_exists('ethiopian_days', $input) ? $input['ethiopian_days'] : (! empty($current['ethiopian_days']) ? array_map('intval', explode(',', $current['ethiopian_days'])) : null);
                 if (! $days) throw ApiError::field('ethiopian_days', 'REQUIRED');
@@ -650,10 +773,27 @@ final class Programs
             }
         }
 
+        $p = DB::table('programs')->where('id', $programId)->first(['category_id']);
+        $isEduCategory = false;
+        if ($p && $p->category_id && Schema::hasTable('program_categories') && Schema::hasColumn('program_categories', 'is_education')) {
+            $isEduCategory = (bool) DB::table('program_categories')->where('id', $p->category_id)->value('is_education');
+        }
+
+        // If category is not education and no explicit classes provided, clear any old education links
+        if (! $isEduCategory && ! $hasClasses && ! $hasCourses && empty($input['schedule_id'])) {
+            if (Schema::hasTable('program_edu_classes')) {
+                DB::table('program_edu_classes')->where('program_id', $programId)->delete();
+            }
+            if (Schema::hasTable('program_edu_courses')) {
+                DB::table('program_edu_courses')->where('program_id', $programId)->delete();
+            }
+            return;
+        }
+
         if (! $hasClasses && ! $hasCourses) return;
 
         $auth = $actx['auth'];
-        if (! $auth->isSystem && ! $auth->can('education.manage') && ! ($auth->isAdmin && $auth->level >= 100)) {
+        if (! $auth->isSystem && ! $auth->can('education.manage') && ! $auth->can('education.classes') && ! $auth->can('programs.manage') && ! ($auth->isAdmin && $auth->level >= 100)) {
             throw ApiError::forbidden('PERMISSION_DENIED', 'Education manage permission is required to link classes or courses');
         }
 
@@ -717,7 +857,7 @@ final class Programs
         }
         $id = DB::transaction(function () use ($actx, $input, $rec, $categoryId, $defaults, $end, $isMandatory, $interval) {
             $groups = ! empty($input['member_groups']) ? implode(',', array_values(array_unique($input['member_groups']))) : null;
-            $newId = DB::table('programs')->insertGetId([
+            $row = [
                 'title' => $input['title'],
                 'description' => $input['description'] ?? null,
                 'location' => $input['location'] ?? null,
@@ -749,7 +889,14 @@ final class Programs
                 'schedule_id' => $input['schedule_id'] ?? null,
                 'created_by' => $actx['auth']->id,
                 'updated_by' => $actx['auth']->id,
-            ]);
+            ];
+            if (Schema::hasColumn('programs', 'ordinal_weeks')) {
+                $row['ordinal_weeks'] = $rec['ordinal_weeks'] ?? null;
+            }
+            if (Schema::hasColumn('programs', 'recurring_weekdays')) {
+                $row['recurring_weekdays'] = $rec['recurring_weekdays'] ?? null;
+            }
+            $newId = DB::table('programs')->insertGetId($row);
             self::syncEducationLinks($actx, $newId, $input);
             Audit::log($actx, Audit::PROGRAM_CREATE, 'program', $newId, ['title' => $input['title']], inTrx: true);
             return $newId;
@@ -787,6 +934,12 @@ final class Programs
                 }
             }
             $patch['updated_by'] = $actx['auth']->id;
+            if (! Schema::hasColumn('programs', 'ordinal_weeks')) {
+                unset($patch['ordinal_weeks']);
+            }
+            if (! Schema::hasColumn('programs', 'recurring_weekdays')) {
+                unset($patch['recurring_weekdays']);
+            }
             DB::table('programs')->where('id', $id)->update($patch);
             self::syncEducationLinks($actx, $id, $input);
             // A one-day program moved to another day keeps its attendance and permission requests.
@@ -974,12 +1127,17 @@ final class Programs
     {
         $q = DB::table('program_categories')->orderBy('display_order')->orderBy('id');
         if (! $all) $q->where('is_active', true);
-        return $q->select('id', 'name', 'name_en', 'color', 'display_order', 'is_active', 'reminder_offsets', 'reminder_interval_days')->get()->map(fn ($c) => self::serializeCategory($c))->all();
+        $cols = ['id', 'name', 'name_en', 'color', 'display_order', 'is_active', 'reminder_offsets', 'reminder_interval_days'];
+        if (Schema::hasColumn('program_categories', 'is_education')) {
+            $cols[] = 'is_education';
+        }
+        return $q->select($cols)->get()->map(fn ($c) => self::serializeCategory($c))->all();
     }
 
     private static function serializeCategory(object $c): object
     {
         $c->is_active = (bool) $c->is_active;
+        $c->is_education = (bool) ($c->is_education ?? false);
         $c->reminder_offsets = $c->reminder_offsets ? self::offsetsOf($c->reminder_offsets) : null;
         $c->reminder_interval_days = $c->reminder_interval_days !== null ? (int) $c->reminder_interval_days : null;
         return $c;
@@ -988,14 +1146,24 @@ final class Programs
     private static function categoryRow(array $input): array
     {
         if (array_key_exists('reminder_offsets', $input)) $input['reminder_offsets'] = $input['reminder_offsets'] ? self::offsetsCsv($input['reminder_offsets']) : null;
+        if (array_key_exists('is_education', $input)) $input['is_education'] = (bool) $input['is_education'];
         return $input;
     }
 
     public static function createCategory(array $actx, array $input): object
     {
         $input = self::categoryRow($input);
-        $id = DB::table('program_categories')->insertGetId(['name' => $input['name'], 'name_en' => $input['name_en'] ?? null, 'color' => $input['color'] ?? '#8A7A7D', 'display_order' => $input['display_order'] ?? 0, 'is_active' => $input['is_active'] ?? true,
-            'reminder_offsets' => $input['reminder_offsets'] ?? null, 'reminder_interval_days' => $input['reminder_interval_days'] ?? null, 'created_by' => $actx['auth']->id]);
+        $id = DB::table('program_categories')->insertGetId([
+            'name' => $input['name'],
+            'name_en' => $input['name_en'] ?? null,
+            'color' => $input['color'] ?? '#8A7A7D',
+            'display_order' => $input['display_order'] ?? 0,
+            'is_active' => $input['is_active'] ?? true,
+            'is_education' => ! empty($input['is_education']),
+            'reminder_offsets' => $input['reminder_offsets'] ?? null,
+            'reminder_interval_days' => $input['reminder_interval_days'] ?? null,
+            'created_by' => $actx['auth']->id,
+        ]);
         Audit::log($actx, Audit::PROGRAM_CATEGORY, 'program_category', $id, ['op' => 'create', 'name' => $input['name']]);
         return self::serializeCategory(DB::table('program_categories')->where('id', $id)->first());
     }

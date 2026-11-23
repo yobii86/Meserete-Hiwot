@@ -75,6 +75,30 @@ class EduSubjectGradesScreen extends ConsumerWidget {
             final subjectName = asStr(subject['name']) ?? (isEn ? 'Subject' : 'የትምህርት ዓይነት');
             final subjectDesc = asStr(subject['description']);
             final grades = asJsonList(data['grades']);
+            final assignedGrades = grades.where((g) => asBool(g['is_assigned']) == true).toList();
+            final session = ref.watch(sessionProvider);
+            final isStaff = session is SignedIn &&
+                (session.user.can(Perm.educationManage) ||
+                    session.user.can(Perm.educationContent) ||
+                    session.user.isSuperAdmin);
+
+            // Automatically navigate directly to student's enrolled grade learning materials
+            if (!isStaff && assignedGrades.length == 1) {
+              final gNum = asInt(assignedGrades.first['grade_number']) ??
+                  asInt(assignedGrades.first['number']);
+              if (gNum != null) {
+                WidgetsBinding.instance.addPostFrameCallback((_) {
+                  if (context.mounted) {
+                    context.pushReplacement('/edu/subject/$subjectId/grade/$gNum');
+                  }
+                });
+                return const Scaffold(
+                  body: Center(child: CircularProgressIndicator(color: AppColors.maroon)),
+                );
+              }
+            }
+
+            final displayGrades = isStaff ? grades : (assignedGrades.isNotEmpty ? assignedGrades : grades);
             final icon = _subjectIcons[subjectId] ?? Icons.menu_book_rounded;
 
             return ListView(
@@ -227,11 +251,11 @@ class EduSubjectGradesScreen extends ConsumerWidget {
                         crossAxisSpacing: 12,
                         childAspectRatio: isTablet ? 1.4 : 1.25,
                       ),
-                      itemCount: grades.length,
+                      itemCount: displayGrades.length,
                       itemBuilder: (context, index) {
-                        final g = grades[index];
-                        final gradeNum = asInt(g['grade_number']) ?? (index + 1);
-                        final gradeName = asStr(g['grade_name']) ?? '$gradeNumኛ ክፍል';
+                        final g = displayGrades[index];
+                        final gradeNum = asInt(g['grade_number']) ?? asInt(g['number']) ?? (index + 1);
+                        final gradeName = asStr(g['grade_name']) ?? asStr(g['name']) ?? '$gradeNumኛ ክፍል';
                         final hasContent = asBool(g['has_content']);
                         final coursesCount = asIntOr(g['courses_count']);
                         final lessonsCount = asIntOr(g['lessons_count']);

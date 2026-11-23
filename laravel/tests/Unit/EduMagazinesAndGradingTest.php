@@ -8,9 +8,11 @@ use App\Mz\Services\EduMagazines;
 use App\Mz\Services\EduQuizzes;
 use App\Mz\Services\Items;
 use App\Mz\Services\Library;
+use App\Mz\Services\Storage;
 use App\Mz\Support\ApiError;
 use App\Mz\Support\Dates;
 use App\Mz\Support\Page;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Schema;
 use Tests\TestCase;
@@ -720,5 +722,79 @@ class EduMagazinesAndGradingTest extends TestCase
 
         $this->assertContains('መጽሐፈ ቅዳሴ', $bookNames);
         $this->assertNotContains('የቢሮ ወንበር', $bookNames);
+    }
+
+    public function test_magazine_pdf_and_cover_upload_and_replacement(): void
+    {
+        // 1. Create a draft magazine
+        $created = EduMagazines::create($this->adminActx, [
+            'title' => 'ሰሌዳ መጽሔት እትም ፭',
+            'title_en' => 'Seleda Issue 5',
+            'issue_number' => 'ቅጽ ፩ ቁ. ፭',
+            'period_info' => 'ጥቅምት ፳፻፲፱',
+            'description' => 'የሙከራ እትም',
+            'issue_date' => '2026-11-02',
+            'status' => 'draft',
+        ]);
+        $id = $created['id'];
+        $this->assertNotNull($id);
+
+        // 2. Upload cover image
+        $pngBytes = base64_decode('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==');
+        $coverTmp = tempnam(sys_get_temp_dir(), 'cov') . '.png';
+        file_put_contents($coverTmp, $pngBytes);
+        $coverFile = new UploadedFile($coverTmp, 'cover.png', 'image/png', null, true);
+
+        $afterCover = EduMagazines::uploadCover($this->adminActx, $id, $coverFile);
+        $this->assertNotEmpty($afterCover['cover_url']);
+        $cover1Path = DB::table('edu_magazines')->where('id', $id)->value('cover_image');
+        $this->assertStringStartsWith('public/images/magazines/', $cover1Path);
+
+        // 3. Upload PDF
+        $pdfContent = "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] >>\nendobj\nxref\n0 4\n0000000000 65535 f \n0000000009 00000 n \n0000000058 00000 n \n0000000115 00000 n \ntrailer\n<< /Size 4 /Root 1 0 R >>\nstartxref\n190\n%%EOF\n";
+        $pdfTmp = tempnam(sys_get_temp_dir(), 'pdf') . '.pdf';
+        file_put_contents($pdfTmp, $pdfContent);
+        $pdfFile = new UploadedFile($pdfTmp, 'magazine.pdf', 'application/pdf', null, true);
+
+        $afterPdf = EduMagazines::uploadPdf($this->adminActx, $id, $pdfFile);
+        $this->assertNotEmpty($afterPdf['pdf_url']);
+        $this->assertGreaterThan(0, $afterPdf['pdf_size']);
+        $pdf1Path = DB::table('edu_magazines')->where('id', $id)->value('pdf_path');
+        $this->assertStringStartsWith('public/magazines/', $pdf1Path);
+
+        // 4. Replace PDF and assert previous file was cleaned up
+        $pdfTmp2 = tempnam(sys_get_temp_dir(), 'pdf2') . '.pdf';
+        file_put_contents($pdfTmp2, $pdfContent . "% v2\n");
+        $pdfFile2 = new UploadedFile($pdfTmp2, 'magazine_v2.pdf', 'application/pdf', null, true);
+
+        $afterPdf2 = EduMagazines::uploadPdf($this->adminActx, $id, $pdfFile2);
+        $pdf2Path = DB::table('edu_magazines')->where('id', $id)->value('pdf_path');
+        $this->assertNotEquals($pdf1Path, $pdf2Path);
+        $this->assertFileDoesNotExist(Storage::publicPath($pdf1Path));
+        $this->assertFileExists(Storage::publicPath($pdf2Path));
+
+        // 5. Replace Cover and assert previous file was cleaned up
+        $coverTmp2 = tempnam(sys_get_temp_dir(), 'cov2') . '.png';
+        file_put_contents($coverTmp2, $pngBytes);
+        $coverFile2 = new UploadedFile($coverTmp2, 'cover_v2.png', 'image/png', null, true);
+
+        $afterCover2 = EduMagazines::uploadCover($this->adminActx, $id, $coverFile2);
+        $cover2Path = DB::table('edu_magazines')->where('id', $id)->value('cover_image');
+        $this->assertNotEquals($cover1Path, $cover2Path);
+        $this->assertFileDoesNotExist(Storage::publicPath($cover1Path));
+        $this->assertFileExists(Storage::publicPath($cover2Path));
+
+        // 6. Remove Cover and assert file was cleaned up
+        $afterRemove = EduMagazines::removeCover($this->adminActx, $id);
+        $this->assertNull($afterRemove['cover_url']);
+        $this->assertNull(DB::table('edu_magazines')->where('id', $id)->value('cover_image'));
+        $this->assertFileDoesNotExist(Storage::publicPath($cover2Path));
+
+        // Clean up
+        Storage::remove($pdf2Path);
+        @unlink($coverTmp);
+        @unlink($coverTmp2);
+        @unlink($pdfTmp);
+        @unlink($pdfTmp2);
     }
 }

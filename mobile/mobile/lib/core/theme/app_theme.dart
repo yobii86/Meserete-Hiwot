@@ -100,6 +100,14 @@ abstract final class AppTheme {
         centerTitle: false,
         titleTextStyle: TextStyle(fontFamily: AppFonts.serif, fontSize: 20, fontWeight: FontWeight.w700, color: p.primary),
       ),
+      cardTheme: CardThemeData(
+        color: p.card,
+        elevation: 0,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: BorderSide(color: p.border, width: 1.0),
+        ),
+      ),
       navigationBarTheme: NavigationBarThemeData(
         height: 66,
         backgroundColor: isDark ? AppColors.darkSurface : AppColors.surface,

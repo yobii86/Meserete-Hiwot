@@ -494,7 +494,8 @@ class _EduStudentScoresViewState extends ConsumerState<EduStudentScoresView> wit
                                 final isPending = a['pending_grading'] == true;
                                 final isReleased = a['results_released'] == true;
                                 final score = a['score'];
-                                final maxScore = a['max_score'] ?? 100;
+                                final totalQ = a['total_questions'];
+                                final maxScore = a['max_score'] ?? (totalQ != null && asIntOr(totalQ) > 0 ? totalQ : 100);
                                 final scorePercent = a['score_percent'];
                                 final feedbacks = asJsonList(a['feedbacks']).isNotEmpty
                                     ? asJsonList(a['feedbacks'])

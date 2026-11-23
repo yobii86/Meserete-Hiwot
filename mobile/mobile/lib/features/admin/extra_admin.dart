@@ -4,9 +4,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../core/providers.dart';
 import '../../core/network/api_client.dart' show Paged;
 import '../../core/network/api_exception.dart';
 import '../../services/offline_pack.dart';
+import '../../widgets/ethiopian_date_picker.dart';
 import '../../core/config/app_config.dart';
 import '../../core/l10n/error_text.dart';
 import '../../core/l10n/l10n.dart';
@@ -26,6 +28,7 @@ import '../auth/session.dart';
 import '../guidance/contextual_help_sheet.dart';
 import '../members/profile_changes.dart' show ChangeLine, ProfileHistoryScreen;
 import 'admin_widgets.dart';
+import 'report_export.dart';
 
 // =============================================================================
 // Name / phone change requests (users.view to see, users.update to decide)
@@ -132,17 +135,86 @@ class AttendanceHomeScreen extends ConsumerStatefulWidget {
   ConsumerState<AttendanceHomeScreen> createState() => _AttendanceHomeScreenState();
 }
 
-class _AttendanceHomeScreenState extends ConsumerState<AttendanceHomeScreen> {
+class _AttendanceHomeScreenState extends ConsumerState<AttendanceHomeScreen> with SingleTickerProviderStateMixin {
+  late final TabController _tabController = TabController(length: 2, vsync: this);
   bool _past = false;
+
+  // History / Overview State
+  final _recordsCtrl = PagedListController<Json>();
+  String _q = '';
+  String _statusFilter = 'all'; // 'all', 'present', 'absent', 'excused'
+  DateTime? _filterDate;
+  String _datePreset = 'all'; // 'all', 'today', 'week', 'month', 'custom'
+  Json? _overview;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadOverview();
+  }
+
+  @override
+  void dispose() {
+    _tabController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _loadOverview() async {
+    try {
+      final String? dateParam = _filterDate?.toIso8601String().substring(0, 10);
+      final ov = await ref.read(adminRepositoryProvider).adminAttendanceOverview(
+        date: dateParam,
+        status: _statusFilter != 'all' ? _statusFilter : null,
+        q: _q.isNotEmpty ? _q : null,
+      );
+      if (mounted) setState(() => _overview = ov);
+    } catch (_) {
+      if (mounted) setState(() => _overview = null);
+    }
+  }
+
+  void _applyDateFilter(String preset) async {
+    DateTime? d;
+    final now = DateTime.now();
+    if (preset == 'today') {
+      d = DateTime(now.year, now.month, now.day);
+    } else if (preset == 'custom') {
+      final picked = await showEthiopianDatePicker(
+        context: context,
+        initialDate: _filterDate ?? now,
+        firstDate: DateTime(2020),
+        lastDate: DateTime(2035),
+      );
+      if (picked == null || !mounted) return;
+      d = picked;
+    }
+    setState(() {
+      _datePreset = preset;
+      _filterDate = d;
+    });
+    _recordsCtrl.refresh();
+    _loadOverview();
+  }
 
   @override
   Widget build(BuildContext context) {
     final l = context.l10n;
     final f = Formatters(l, Localizations.localeOf(context).languageCode);
     final me = ref.watch(currentUserProvider);
+    final p = context.palette;
+
     return AdminScaffold(
       title: l.attendance,
       actions: [
+        ReportExportButton(
+          kind: 'attendance',
+          label: l.attendance,
+          filters: () => {
+            if (_filterDate != null) 'date': _filterDate!.toIso8601String().substring(0, 10),
+            if (_statusFilter != 'all') 'status': _statusFilter,
+            if (_q.isNotEmpty) 'q': _q,
+          },
+        ),
         IconButton(tooltip: l.permissionRequests, icon: const Icon(Icons.edit_calendar_outlined), onPressed: () => context.push('/admin/permissions')),
         if (me?.canAny([Perm.attendanceCorrectionRequest, Perm.attendanceCorrectionApprove]) ?? false)
           IconButton(tooltip: l.attCorrections, icon: const Icon(Icons.rule_rounded), onPressed: () => context.push('/admin/attendance/corrections')),
@@ -153,54 +225,486 @@ class _AttendanceHomeScreenState extends ConsumerState<AttendanceHomeScreen> {
         const ContextualHelpButton(screenRoute: '/admin/attendance'),
       ],
       body: Column(children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-          child: SegmentedButton<bool>(
-            showSelectedIcon: false,
-            segments: [ButtonSegment(value: false, label: Text(l.attendanceToday)), ButtonSegment(value: true, label: Text(l.attendanceRecent))],
-            selected: {_past},
-            onSelectionChanged: (s) => setState(() => _past = s.first),
-          ),
-        ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
-          child: Row(children: [
-            const Icon(Icons.info_outline_rounded, size: 16, color: AppColors.gold),
-            const SizedBox(width: 6),
-            Expanded(child: Text(l.attendanceOnlyAdmins, style: context.sans(12, color: context.palette.muted))),
-          ]),
+        TabBar(
+          controller: _tabController,
+          labelColor: AppColors.maroon,
+          indicatorColor: AppColors.maroon,
+          tabs: [
+            Tab(text: l.isEn ? 'Overview & History' : 'አጠቃላይ መረጃ እና ታሪክ', icon: const Icon(Icons.history_rounded, size: 20)),
+            Tab(text: l.isEn ? 'Take Attendance' : 'መገኘት መመዝገቢያ', icon: const Icon(Icons.how_to_reg_rounded, size: 20)),
+          ],
         ),
         Expanded(
-          child: PagedListView<Program>(
-            key: ValueKey(_past),
-            // Only the programs this person may take attendance for; offline, the programs kept on the
-            // phone (offline pack) when the list was never opened online.
-            fetch: (page) async {
-              try {
-                return await ref.read(adminRepositoryProvider).takeablePrograms(scope: _past ? 'past' : 'upcoming', page: page);
-              } on ApiException catch (e) {
-                if (!e.isNetwork || page > 1) rethrow;
-                final saved = await ref.read(offlinePackProvider).programs();
-                final items = [
-                  for (final p in saved)
-                    Program.fromJson({...p, 'starts_at': asJsonList(p['occurrences']).firstOrNull?['starts_at'], 'ends_at': asJsonList(p['occurrences']).firstOrNull?['ends_at']}),
-                ];
-                return Paged(items: items, page: 1, pages: 1, total: items.length, meta: const {'offline': true});
-              }
-            },
-            emptyMessage: l.noPrograms,
-            emptyIcon: Icons.event_busy_outlined,
-            itemBuilder: (context, p, _) => TrackTile(
-              title: p.title,
-              subtitle: '${f.dateTime(p.startsAt)} · ${l.participantsCount(p.participantCount)}',
-              leading: ListThumb(icon: Icons.how_to_reg_rounded, imageUrl: p.imageUrl, active: !_past),
-              trailing: const Icon(Icons.chevron_right_rounded),
-              // Without registered participants, start from all users so walk-ins can be marked.
-              onTap: () => context.push('/admin/programs/${p.id}/attendance${p.participantCount == 0 ? '?source=all' : ''}'),
-            ),
+          child: TabBarView(
+            controller: _tabController,
+            children: [
+              // TAB 0: Complete Attendance Management & History
+              _buildHistoryTab(l, f, p),
+
+              // TAB 1: Take Attendance Roster (Existing Quick Taker workflow)
+              _buildTakeAttendanceTab(l, f, p),
+            ],
           ),
         ),
       ]),
+    );
+  }
+
+  Widget _buildHistoryTab(AppLocalizations l, Formatters f, Palette p) {
+    final String? dateParam = _filterDate?.toIso8601String().substring(0, 10);
+
+    return RefreshIndicator(
+      color: AppColors.gold,
+      onRefresh: () async {
+        _recordsCtrl.refresh();
+        await _loadOverview();
+      },
+      child: ListView(
+        padding: const EdgeInsets.fromLTRB(16, 12, 16, 32),
+        children: [
+          // 1. Search Box
+          SearchBox(
+            hint: l.isEn ? 'Search by name, member ID, phone, program...' : 'በስም፣ አባል መለያ፣ ስልክ፣ ፕሮግራም ይፈልጉ...',
+            onChanged: (v) {
+              setState(() => _q = v.trim());
+              _recordsCtrl.refresh();
+              _loadOverview();
+            },
+          ),
+          const SizedBox(height: 10),
+
+          // 2. Date presets and Calendar Picker
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: Row(children: [
+              FilterChip(
+                selected: _datePreset == 'all',
+                label: Text(l.isEn ? 'All Dates' : 'ሁሉም ቀናት'),
+                onSelected: (_) => _applyDateFilter('all'),
+              ),
+              const SizedBox(width: 6),
+              FilterChip(
+                selected: _datePreset == 'today',
+                label: Text(l.attendanceToday),
+                onSelected: (_) => _applyDateFilter('today'),
+              ),
+              const SizedBox(width: 6),
+              FilterChip(
+                selected: _datePreset == 'custom',
+                label: Text(
+                  _filterDate != null
+                      ? '${_filterDate!.year}-${_filterDate!.month.toString().padLeft(2, "0")}-${_filterDate!.day.toString().padLeft(2, "0")}'
+                      : (l.isEn ? 'Pick Date' : 'ቀን ይምረጡ'),
+                ),
+                avatar: const Icon(Icons.calendar_month_rounded, size: 16),
+                onSelected: (_) => _applyDateFilter('custom'),
+              ),
+            ]),
+          ),
+          const SizedBox(height: 8),
+
+          // 3. Status Filters
+          SegmentedButton<String>(
+            showSelectedIcon: false,
+            segments: [
+              ButtonSegment(value: 'all', label: Text(l.isEn ? 'All' : 'ሁሉም')),
+              ButtonSegment(value: 'present', label: Text(l.isEn ? 'Present' : 'የተገኙ')),
+              ButtonSegment(value: 'absent', label: Text(l.isEn ? 'Absent' : 'ያልተገኙ')),
+              ButtonSegment(value: 'excused', label: Text(l.isEn ? 'Excused' : 'ፈቃድ')),
+            ],
+            selected: {_statusFilter},
+            onSelectionChanged: (s) {
+              setState(() => _statusFilter = s.first);
+              _recordsCtrl.refresh();
+              _loadOverview();
+            },
+          ),
+          const SizedBox(height: 14),
+
+          // 4. Overview Metrics Cards
+          if (_overview != null) _buildOverviewMetrics(l, p),
+          const SizedBox(height: 16),
+
+          // 5. Section Header for Records List
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(
+                l.isEn ? 'Attendance Records' : 'የተመዘገቡ መዝገቦች',
+                style: context.serif(15, weight: FontWeight.w700),
+              ),
+              if (_overview != null)
+                Text(
+                  '${_overview!['total_records'] ?? 0} ${l.isEn ? "records" : "መዝገቦች"}',
+                  style: context.sans(12, color: p.muted),
+                ),
+            ],
+          ),
+          const SizedBox(height: 8),
+
+          // 6. Paginated Records
+          PagedListView<Json>(
+            key: ValueKey('$_q-$_datePreset-${_filterDate?.toIso8601String()}-$_statusFilter'),
+            controller: _recordsCtrl,
+            fetch: (page) => ref.read(adminRepositoryProvider).adminAttendanceRecords(
+              date: dateParam,
+              status: _statusFilter != 'all' ? _statusFilter : null,
+              q: _q.isNotEmpty ? _q : null,
+              page: page,
+            ),
+            emptyMessage: l.isEn ? 'No attendance records match your criteria' : 'ምንም ዓይነት የመገኘት መዝገብ አልተገኘም',
+            emptyIcon: Icons.event_note_outlined,
+            itemBuilder: (context, r, _) => _buildRecordTile(context, r, l, f, p),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOverviewMetrics(AppLocalizations l, Palette p) {
+    final ov = _overview!;
+    final total = asIntOr(ov['total_records']);
+    final present = asIntOr(ov['present']);
+    final absent = asIntOr(ov['absent']);
+    final excused = asIntOr(ov['excused']);
+    final rate = ov['attendance_rate'] ?? 0;
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: p.card,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: p.border),
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceAround,
+            children: [
+              _metricCol(l.isEn ? 'Total' : 'አጠቃላይ', '$total', AppColors.maroon),
+              _metricCol(l.isEn ? 'Present' : 'የተገኙ', '$present', AppColors.success),
+              _metricCol(l.isEn ? 'Absent' : 'ያልተገኙ', '$absent', AppColors.danger),
+              _metricCol(l.isEn ? 'Excused' : 'ፈቃድ', '$excused', Colors.orange),
+              _metricCol(l.isEn ? 'Rate' : 'መቶኛ', '$rate%', AppColors.goldDark),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _metricCol(String label, String value, Color color) {
+    return Column(
+      children: [
+        Text(value, style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold, color: color)),
+        const SizedBox(height: 2),
+        Text(label, style: const TextStyle(fontSize: 11, color: Colors.grey)),
+      ],
+    );
+  }
+
+  Widget _buildRecordTile(BuildContext context, Json r, AppLocalizations l, Formatters f, Palette p) {
+    final status = asStr(r['status']) ?? 'unmarked';
+    final hasSig = r['has_signature'] == true;
+    final via = asStr(r['via']) ?? 'manual';
+    final attendedAt = asStr(r['attended_at']);
+
+    Color statusColor = AppColors.danger;
+    String statusText = l.isEn ? 'Absent' : 'ያልተገኘ';
+    if (status == 'present') {
+      statusColor = AppColors.success;
+      statusText = l.isEn ? 'Present' : 'የተገኘ';
+    } else if (status == 'excused') {
+      statusColor = Colors.orange;
+      statusText = l.isEn ? 'Excused' : 'ፈቃድ';
+    }
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: AppCard(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      child: InkWell(
+        onTap: () => _openRecordDetail(r),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    asStr(r['user_name']) ?? '#${r['user_id']}',
+                    style: context.serif(15, weight: FontWeight.w600),
+                  ),
+                ),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                  decoration: BoxDecoration(
+                    color: statusColor.withValues(alpha: 0.12),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: statusColor.withValues(alpha: 0.4)),
+                  ),
+                  child: Text(statusText, style: TextStyle(color: statusColor, fontSize: 11, fontWeight: FontWeight.bold)),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Row(
+              children: [
+                if (asStr(r['member_id']) != null) ...[
+                  Text(r['member_id']!, style: context.sans(11, color: p.muted, weight: FontWeight.w600)),
+                  const SizedBox(width: 8),
+                ],
+                Expanded(
+                  child: Text(
+                    '${r['program_title'] ?? ""} · ${r['occurrence_date'] ?? ""}',
+                    style: context.sans(12, color: p.muted),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Row(
+              children: [
+                Icon(via == 'qr' ? Icons.qr_code_scanner_rounded : Icons.edit_note_rounded, size: 14, color: p.subtle),
+                const SizedBox(width: 4),
+                Text(via.toUpperCase(), style: context.sans(11, color: p.subtle)),
+                if (hasSig) ...[
+                  const SizedBox(width: 10),
+                  const Icon(Icons.draw_rounded, size: 14, color: AppColors.maroon),
+                  const SizedBox(width: 2),
+                  Text(l.isEn ? 'Signed' : 'የፈረመ', style: context.sans(11, color: AppColors.maroon, weight: FontWeight.w600)),
+                ],
+                const Spacer(),
+                if (attendedAt != null)
+                  Text(attendedAt.length >= 16 ? attendedAt.substring(11, 16) : attendedAt, style: context.sans(11, color: p.subtle)),
+                const SizedBox(width: 4),
+                const Icon(Icons.chevron_right_rounded, size: 16, color: Colors.grey),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+}
+
+  void _openRecordDetail(Json r) {
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      builder: (_) => _AttendanceRecordDetailSheet(record: r),
+    );
+  }
+
+  Widget _buildTakeAttendanceTab(AppLocalizations l, Formatters f, Palette p) {
+    return Column(children: [
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+        child: SegmentedButton<bool>(
+          showSelectedIcon: false,
+          segments: [ButtonSegment(value: false, label: Text(l.attendanceToday)), ButtonSegment(value: true, label: Text(l.attendanceRecent))],
+          selected: {_past},
+          onSelectionChanged: (s) => setState(() => _past = s.first),
+        ),
+      ),
+      Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 4),
+        child: Row(children: [
+          const Icon(Icons.info_outline_rounded, size: 16, color: AppColors.gold),
+          const SizedBox(width: 6),
+          Expanded(child: Text(l.attendanceOnlyAdmins, style: context.sans(12, color: p.muted))),
+        ]),
+      ),
+      Expanded(
+        child: PagedListView<Program>(
+          key: ValueKey(_past),
+          fetch: (page) async {
+            try {
+              return await ref.read(adminRepositoryProvider).takeablePrograms(scope: _past ? 'past' : 'upcoming', page: page);
+            } on ApiException catch (e) {
+              if (!e.isNetwork || page > 1) rethrow;
+              final saved = await ref.read(offlinePackProvider).programs();
+              final items = [
+                for (final pr in saved)
+                  Program.fromJson({...pr, 'starts_at': asJsonList(pr['occurrences']).firstOrNull?['starts_at'], 'ends_at': asJsonList(pr['occurrences']).firstOrNull?['ends_at']}),
+              ];
+              return Paged(items: items, page: 1, pages: 1, total: items.length, meta: const {'offline': true});
+            }
+          },
+          emptyMessage: l.noPrograms,
+          emptyIcon: Icons.event_busy_outlined,
+          itemBuilder: (context, pr, _) => TrackTile(
+            title: pr.title,
+            subtitle: '${f.dateTime(pr.startsAt)} · ${l.participantsCount(pr.participantCount)}',
+            leading: ListThumb(icon: Icons.how_to_reg_rounded, imageUrl: pr.imageUrl, active: !_past),
+            trailing: const Icon(Icons.chevron_right_rounded),
+            onTap: () => context.push('/admin/programs/${pr.id}/attendance${pr.participantCount == 0 ? '?source=all' : ''}'),
+          ),
+        ),
+      ),
+    ]);
+  }
+}
+
+class _AttendanceRecordDetailSheet extends ConsumerWidget {
+  const _AttendanceRecordDetailSheet({required this.record});
+  final Json record;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final l = context.l10n;
+    final p = context.palette;
+    final r = record;
+    final status = asStr(r['status']) ?? 'unmarked';
+    final hasSig = r['has_signature'] == true;
+    final sigUrl = asStr(r['signature_url']);
+    final token = ref.read(secureStoreProvider).accessToken;
+
+    Color statusColor = AppColors.danger;
+    String statusText = l.isEn ? 'Absent' : 'ያልተገኘ';
+    if (status == 'present') {
+      statusColor = AppColors.success;
+      statusText = l.isEn ? 'Present' : 'የተገኘ';
+    } else if (status == 'excused') {
+      statusColor = Colors.orange;
+      statusText = l.isEn ? 'Excused' : 'ፈቃድ';
+    }
+
+    return SafeArea(
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    l.isEn ? 'Attendance Details' : 'የመገኘት ዝርዝር መረጃ',
+                    style: context.serif(18, weight: FontWeight.w700),
+                  ),
+                  IconButton(
+                    icon: const Icon(Icons.close_rounded),
+                    onPressed: () => Navigator.pop(context),
+                  ),
+                ],
+              ),
+              const Divider(),
+              const SizedBox(height: 6),
+
+              // Member Header
+              Row(
+                children: [
+                  CircleAvatar(
+                    radius: 24,
+                    backgroundImage: asStr(r['user_photo']) != null ? NetworkImage(r['user_photo']!) : null,
+                    child: asStr(r['user_photo']) == null ? const Icon(Icons.person_rounded) : null,
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          asStr(r['user_name']) ?? '',
+                          style: context.serif(16, weight: FontWeight.w700),
+                        ),
+                        if (asStr(r['member_id']) != null)
+                          Text(
+                            'ID: ${r['member_id']}',
+                            style: context.sans(12, color: p.muted),
+                          ),
+                        if (asStr(r['phone']) != null)
+                          Text(
+                            r['phone']!,
+                            style: context.sans(12, color: p.muted),
+                          ),
+                      ],
+                    ),
+                  ),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                    decoration: BoxDecoration(
+                      color: statusColor.withValues(alpha: 0.15),
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(color: statusColor),
+                    ),
+                    child: Text(
+                      statusText,
+                      style: TextStyle(color: statusColor, fontWeight: FontWeight.bold, fontSize: 12),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 16),
+
+              // Detail List Items
+              _detailRow(l.isEn ? 'Program / Event' : 'ፕሮግራም / ተግባር', '${r['program_title'] ?? ""}'),
+              _detailRow(l.isEn ? 'Date' : 'ቀን', '${r['occurrence_date'] ?? ""}'),
+              if (asStr(r['attended_at']) != null)
+                _detailRow(l.isEn ? 'Captured At' : 'የተመዘገበበት ሰዓት', '${r['attended_at']}'),
+              if (asStr(r['recorder_name']) != null)
+                _detailRow(l.isEn ? 'Recorded By' : 'መዝጋቢ', '${r['recorder_name']}'),
+              _detailRow(l.isEn ? 'Method' : 'ዘዴ', (asStr(r['via']) ?? 'manual').toUpperCase()),
+              if (asStr(r['notes']) != null && asStr(r['notes'])!.isNotEmpty)
+                _detailRow(l.isEn ? 'Notes' : 'ማስታወሻ', r['notes']!),
+
+              // Digital Signature Preview
+              if (hasSig && sigUrl != null) ...[
+                const SizedBox(height: 14),
+                Text(
+                  l.isEn ? 'Member Digital Signature' : 'የአባሉ ዲጂታል ፊርማ',
+                  style: context.sans(13, weight: FontWeight.w700),
+                ),
+                const SizedBox(height: 8),
+                Container(
+                  width: double.infinity,
+                  height: 120,
+                  padding: const EdgeInsets.all(8),
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: p.border),
+                  ),
+                  child: Image.network(
+                    '${AppConfig.apiBaseUrl}$sigUrl',
+                    headers: token != null ? {'Authorization': 'Bearer $token'} : null,
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, _, _) => Center(
+                      child: Text(
+                        l.isEn ? 'Signature preview unavailable' : 'ፊርማውን ማሳየት አልተቻለም',
+                        style: const TextStyle(fontSize: 12, color: Colors.grey),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 130,
+            child: Text(label, style: const TextStyle(fontSize: 13, color: Colors.grey)),
+          ),
+          Expanded(
+            child: Text(value, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w500)),
+          ),
+        ],
+      ),
     );
   }
 }

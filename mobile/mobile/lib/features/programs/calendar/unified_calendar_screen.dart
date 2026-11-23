@@ -13,6 +13,7 @@ import '../../../models/json.dart';
 import '../../../repositories/providers.dart';
 import '../../../widgets/brand.dart';
 import '../../../widgets/dialogs.dart';
+import '../../admin/programs_admin.dart' show createProgram;
 import '../../guidance/contextual_help_sheet.dart';
 import '../../settings/attendance_calendar.dart' show attendanceStyle, attendanceStateLabel, programCategoriesProvider;
 import '../program_text.dart';
@@ -42,6 +43,7 @@ class CalendarOccurrence {
     required this.ethDay,
     this.rescheduled = false,
     this.cancelled = false,
+    this.suspended = false,
   });
 
   final int programId;
@@ -65,6 +67,7 @@ class CalendarOccurrence {
   final int ethDay;
   final bool rescheduled;
   final bool cancelled;
+  final bool suspended;
 
   factory CalendarOccurrence.fromJson(Json j) {
     final eth = asJson(j['ethiopian']);
@@ -95,7 +98,14 @@ class CalendarOccurrence {
       ethDay: asInt(eth['day']) ?? ed.day,
       rescheduled: asBool(j['rescheduled']),
       cancelled: asBool(j['cancelled']),
+      suspended: asBool(j['suspended']),
     );
+  }
+
+  bool overlapsWith(CalendarOccurrence other) {
+    if (programId == other.programId) return false;
+    if (date != other.date) return false;
+    return startsAt.isBefore(other.endsAt) && endsAt.isAfter(other.startsAt);
   }
 
   Json toJson() => {
@@ -220,6 +230,14 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
     }
   }
 
+  Future<void> _openCreateProgramForDate(EthiopianDate ed) async {
+    final greg = ed.toGregorian();
+    final created = await createProgram(context, initialDate: greg);
+    if (created != null && mounted) {
+      _loadEvents(forceRefresh: true);
+    }
+  }
+
   void _previousYear() {
     setState(() {
       _selectedYear--;
@@ -291,6 +309,13 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
           ),
           const ContextualHelpButton(screenRoute: '/programs'),
         ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        tooltip: 'መርሐግብር ፍጠር (New Program)',
+        backgroundColor: AppColors.maroon,
+        foregroundColor: Colors.white,
+        onPressed: () => _openCreateProgramForDate(_selectedDate),
+        child: const Icon(Icons.add),
       ),
       body: SafeArea(
         bottom: false,
@@ -560,6 +585,7 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
 
     return GridView.builder(
       physics: const NeverScrollableScrollPhysics(),
+      shrinkWrap: true,
       itemCount: totalDays,
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 7,
@@ -741,7 +767,14 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
 
       cells.add(
         InkWell(
-          onTap: () => setState(() => _selectedDate = EthiopianDate(_selectedYear, _selectedMonth, dayNum)),
+          onTap: () {
+            if (_selectedDate == EthiopianDate(_selectedYear, _selectedMonth, dayNum)) {
+              _openCreateProgramForDate(_selectedDate);
+            } else {
+              setState(() => _selectedDate = EthiopianDate(_selectedYear, _selectedMonth, dayNum));
+            }
+          },
+          onLongPress: () => _openCreateProgramForDate(EthiopianDate(_selectedYear, _selectedMonth, dayNum)),
           borderRadius: BorderRadius.circular(8),
           child: Container(
             margin: const EdgeInsets.all(2),
@@ -817,12 +850,17 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
                   child: InkWell(
                     onTap: () {
                       final ed = EthiopianDate.fromGregorian(g);
-                      setState(() {
-                        _selectedYear = ed.year;
-                        _selectedMonth = ed.month;
-                        _selectedDate = ed;
-                      });
+                      if (_selectedDate == ed) {
+                        _openCreateProgramForDate(ed);
+                      } else {
+                        setState(() {
+                          _selectedYear = ed.year;
+                          _selectedMonth = ed.month;
+                          _selectedDate = ed;
+                        });
+                      }
                     },
+                    onLongPress: () => _openCreateProgramForDate(EthiopianDate.fromGregorian(g)),
                     borderRadius: BorderRadius.circular(8),
                     child: Container(
                       padding: const EdgeInsets.symmetric(vertical: 4),
@@ -944,13 +982,17 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
       );
     }
 
-    return ListView.builder(
-      padding: const EdgeInsets.all(16),
-      itemCount: sorted.length,
-      itemBuilder: (context, idx) {
-        final occ = sorted[idx];
-        final prevOcc = idx > 0 ? sorted[idx - 1] : null;
-        final showDateHeader = prevOcc == null || prevOcc.date != occ.date;
+    return Column(
+      children: [
+        _buildAttendanceLegend(context, l),
+        Expanded(
+          child: ListView.builder(
+            padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+            itemCount: sorted.length,
+            itemBuilder: (context, idx) {
+              final occ = sorted[idx];
+              final prevOcc = idx > 0 ? sorted[idx - 1] : null;
+              final showDateHeader = prevOcc == null || prevOcc.date != occ.date;
 
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -979,12 +1021,78 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
           ],
         );
       },
+    ),
+  ),
+],
+);
+  }
+
+  Widget _buildAttendanceLegend(BuildContext context, AppLocalizations l) {
+    final isEn = l.isEn;
+    final items = [
+      ('present', isEn ? 'Present' : 'የተገኙ', const Color(0xFF2E7D32), Icons.check_circle_rounded),
+      ('absent', isEn ? 'Absent' : 'ያልተገኙ', const Color(0xFFC62828), Icons.cancel_rounded),
+      ('excused', isEn ? 'Excused' : 'ፈቃድ', const Color(0xFF1976D2), Icons.verified_user_rounded),
+      ('suspended', isEn ? 'Suspended' : 'የተቋረጠ', const Color(0xFFE65100), Icons.pause_circle_filled_rounded),
+      ('pending', isEn ? 'Pending' : 'ያልተመዘገበ', const Color(0xFF8E601C), Icons.hourglass_top_rounded),
+    ];
+
+    return Container(
+      margin: const EdgeInsets.fromLTRB(16, 8, 16, 4),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      decoration: BoxDecoration(
+        color: context.palette.card,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: context.palette.border.withValues(alpha: 0.6)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(Icons.info_outline_rounded, size: 14, color: context.palette.muted),
+              const SizedBox(width: 6),
+              Text(
+                isEn ? 'Personal Attendance Status' : 'የግል መገኘት ሁኔታ መፍቻ',
+                style: context.sans(11, weight: FontWeight.w700, color: context.palette.muted),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 12,
+            runSpacing: 6,
+            children: [
+              for (final (_, label, color, icon) in items)
+                Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(icon, size: 13, color: color),
+                    const SizedBox(width: 4),
+                    Text(
+                      label,
+                      style: context.sans(11, weight: FontWeight.w600, color: color),
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 
   // Card for an individual occurrence
   Widget _buildOccurrenceCard(CalendarOccurrence occ, Formatters f, AppLocalizations l, String lang) {
     final catColor = occ.category?.color != null ? hexColor(occ.category!.color) : AppColors.maroon;
+    final isPast = occ.endsAt.isBefore(DateTime.now());
+    final effectiveStatus = occ.suspended
+        ? 'suspended'
+        : occ.cancelled
+            ? 'cancelled'
+            : (occ.myAttendance != null && occ.myAttendance!.isNotEmpty)
+                ? occ.myAttendance!
+                : (occ.requiresAttendance ? (isPast ? 'absent' : 'pending') : null);
 
     return Material(
       color: Theme.of(context).cardColor,
@@ -1038,15 +1146,26 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
                                 child: Text('የትምህርት ክፍል', style: context.sans(11, weight: FontWeight.w600, color: AppColors.maroon)),
                               ),
                             ],
-                            if (occ.cancelled) ...[
+                            if (_occurrences.any((o) => o.overlapsWith(occ))) ...[
                               const SizedBox(width: 6),
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                 decoration: BoxDecoration(
-                                  color: AppColors.danger.withValues(alpha: 0.15),
+                                  color: Colors.amber.withValues(alpha: 0.2),
                                   borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: Colors.amber.shade700, width: 0.8),
                                 ),
-                                child: const Text('ተሰርዟል', style: TextStyle(fontSize: 10, color: AppColors.danger, fontWeight: FontWeight.bold)),
+                                child: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    Icon(Icons.warning_amber_rounded, size: 12, color: Colors.amber.shade800),
+                                    const SizedBox(width: 3),
+                                    Text(
+                                      lang == 'en' ? 'Time Overlap' : 'የሰዓት መደራረብ አለ',
+                                      style: TextStyle(fontSize: 10, color: Colors.amber.shade900, fontWeight: FontWeight.bold),
+                                    ),
+                                  ],
+                                ),
                               ),
                             ],
                           ],
@@ -1054,22 +1173,26 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
                       ],
                     ),
                   ),
-                  if (occ.requiresAttendance && occ.myAttendance != null) ...[
+                  if (effectiveStatus != null) ...[
                     const SizedBox(width: 8),
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
                       decoration: BoxDecoration(
-                        color: attendanceStyle(occ.myAttendance!).color.withValues(alpha: 0.15),
+                        color: attendanceStyle(effectiveStatus).color.withValues(alpha: 0.14),
                         borderRadius: BorderRadius.circular(6),
+                        border: Border.all(
+                          color: attendanceStyle(effectiveStatus).color.withValues(alpha: 0.4),
+                          width: 1,
+                        ),
                       ),
                       child: Row(
                         mainAxisSize: MainAxisSize.min,
                         children: [
-                          Icon(attendanceStyle(occ.myAttendance!).icon, size: 14, color: attendanceStyle(occ.myAttendance!).color),
+                          Icon(attendanceStyle(effectiveStatus).icon, size: 14, color: attendanceStyle(effectiveStatus).color),
                           const SizedBox(width: 4),
                           Text(
-                            attendanceStateLabel(l, occ.myAttendance!),
-                            style: context.sans(11, weight: FontWeight.w600, color: attendanceStyle(occ.myAttendance!).color),
+                            attendanceStateLabel(l, effectiveStatus),
+                            style: context.sans(11.5, weight: FontWeight.w700, color: attendanceStyle(effectiveStatus).color),
                           ),
                         ],
                       ),
@@ -1116,6 +1239,55 @@ class _UnifiedCalendarScreenState extends ConsumerState<UnifiedCalendarScreen> {
                   ],
                 ),
               ],
+              // Administrative occurrence actions (Direct Take Attendance & Program Edit)
+              const Divider(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  Builder(builder: (ctx) {
+                    final now = DateTime.now();
+                    final todayStr = '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+                    final dateStr = occ.date.length >= 10 ? occ.date.substring(0, 10) : occ.date;
+                    final isPast = dateStr.compareTo(todayStr) < 0;
+
+                    return OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(
+                        visualDensity: VisualDensity.compact,
+                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                        side: BorderSide(color: isPast ? Colors.grey.shade400 : const Color(0xFFC6A044)),
+                      ),
+                      icon: Icon(
+                        isPast ? Icons.visibility_outlined : Icons.people_outline_rounded,
+                        size: 16,
+                        color: isPast ? Colors.grey.shade700 : const Color(0xFF650D20),
+                      ),
+                      label: Text(
+                        isPast
+                            ? (lang == 'en' ? 'View Roster' : 'መዝገብ እይ')
+                            : (lang == 'en' ? 'Take Attendance' : 'አቴንዳንስ ውሰድ'),
+                        style: TextStyle(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w700,
+                          color: isPast ? Colors.grey.shade700 : const Color(0xFF650D20),
+                        ),
+                      ),
+                      onPressed: () {
+                        context.push('/admin/programs/${occ.programId}/attendance?date=$dateStr');
+                      },
+                    );
+                  }),
+                  const SizedBox(width: 8),
+                  TextButton.icon(
+                    style: TextButton.styleFrom(
+                      visualDensity: VisualDensity.compact,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                    ),
+                    icon: const Icon(Icons.edit_outlined, size: 15),
+                    label: Text(lang == 'en' ? 'Edit' : 'አርትዕ', style: const TextStyle(fontSize: 12)),
+                    onPressed: () => context.push('/admin/programs/edit/${occ.programId}'),
+                  ),
+                ],
+              ),
             ],
           ),
         ),

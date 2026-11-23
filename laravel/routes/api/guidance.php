@@ -51,7 +51,7 @@ Route::prefix('guidance')->group(function () {
         });
 
         Route::post('progress/reset', function () {
-            $tourId = Ctx::bodyOrNull()['tour_id'] ?? null;
+            $tourId = Ctx::input()['tour_id'] ?? null;
             GuidanceService::resetTourProgress(Ctx::auth(), $tourId);
             return Http::ok(null, null, 'Tour progress reset successfully');
         });

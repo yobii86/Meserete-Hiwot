@@ -4,4 +4,4 @@
      removed them: the play / pause / next / previous notification then failed to build
      ("You must specify an icon resource id to build a CustomAction") and no controls appeared. -->
 <resources xmlns:tools="http://schemas.android.com/tools"
-    tools:keep="@drawable/audio_service_*,@mipmap/ic_launcher,@drawable/ic_stat_*" />
+    tools:keep="@drawable/audio_service_*,@mipmap/*,@drawable/*,@raw/*" />

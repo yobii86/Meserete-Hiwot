@@ -1,68 +1,591 @@
-step 1
+# MASTER IMPLEMENTATION PROMPT — MEZMUR ZEMSERETEE HIWOT
+**Project:** MH-app-1.5.3  
+**Mission:** Execute the approved architectural improvements, eliminate identified risks, preserve existing functionality and data, and deliver a production-ready implementation.
 
+## 1. YOUR ROLE AND EXECUTION REQUIREMENTS
 
-Fix and complete the existing in-app Guide/Help Center across the entire application.
+Act as a Senior Laravel Backend Architect, Flutter Engineer, Database Engineer, Security Engineer, QA Engineer, and Release Engineer.
 
-**First inspect the existing implementation and fix it in place. Do not rebuild or duplicate the guide unnecessarily.**
+You are responsible for completing the actual engineering work, not merely reviewing, describing, or recommending solutions.
 
-### 1. Direct navigation from every guide
-- Every guide instruction, feature explanation, and actionable help item must link to its exact relevant page, section, or function.
-- When a user taps “Open,” “Go to feature,” or a guide step, navigate directly to the actual destination and relevant function, not merely the homepage, dashboard, or a generic screen.
-- Pass required IDs and context, such as program ID, selected record, or settings section, when necessary.
-- If the destination requires multiple steps, guide the user through them in order and open the correct screen at each step.
-- Respect authentication, roles, and permissions. If access is denied, explain why and show the permitted alternative.
-- Handle back navigation correctly so users can return to the guide without losing their place.
-- If a destination is unavailable, show a clear message instead of silently navigating somewhere unrelated.
+Your responsibilities:
 
-### 2. Context-aware help on EVERY page
-- Audit all existing mobile and admin pages, screens, tabs, dialogs, and major functions.
-- Provide relevant help for each page and its available actions, not just a few main features.
-- Each page must have a contextual “Help” or “How to use this” action that opens guidance specific to that exact page and function.
-- Explain the page’s purpose, available actions, required permissions, and step-by-step usage in simple language.
-- Include guidance for empty states, errors, forms, filters, settings, approvals, and important actions where useful.
-- Cover all applicable features, including profile and profession, programs, attendance, Mezmur and Education modules, holiday selection and eligibility, scoring and bonuses, feedback, reminders and notifications, reports, department workflows, and administrative settings.
-- Dynamically reflect the actual features enabled and permissions available to the current user.
+1. Inspect the existing application and all five engineering deliverables.
+2. Compare the proposed architecture against the actual implementation.
+3. Identify what is already implemented, partially implemented, broken, or missing.
+4. Correct technical inconsistencies before implementing dependent features.
+5. Implement the approved functionality in the existing project.
+6. Preserve existing working functionality and historical records.
+7. Execute automated tests, integration tests, regression tests, and available web-based UI tests.
+8. Fix implementation-related failures and repeat testing.
+9. Produce an evidence-based implementation and verification report.
+10. Prepare deployment only when all release requirements pass. Never deploy without my approval.
 
-### 3. Make guide actions functional
-- Audit every guide link, button, step, and navigation target.
-- Replace placeholder links, dead buttons, generic destinations, and incomplete navigation handlers with working implementations.
-- Use the project’s existing routing and navigation architecture.
-- Where supported, highlight the exact target control or section after navigation.
-- If a feature is behind a tab, submenu, or settings section, open the correct parent screen and select the correct destination automatically.
-- Keep the guide synchronized with actual application functionality. Never document a nonexistent feature as if it works.
+**Important:** Do not stop after producing an investigation report or implementation plan. Continue into actual implementation unless a genuine blocker requires my decision.
 
-### 4. User and administrator guidance
-- Show ordinary users only guidance relevant to their permissions.
-- Show administrator guidance only to authorized administrators and provide direct navigation to the corresponding administrative functions.
-- Include the appropriate approval and management workflows, with their actual permission restrictions.
-- Keep first-use guidance skippable and allow users to reopen it later.
+Do not ask me to perform manual coding, inspect source files, or repeat information already available in the project.
 
-### 5. Implementation and verification
-- Inspect the existing Laravel backend, Flutter mobile app, admin interface, routes, permissions, and guide implementation before changing code.
-- Create or update a centralized guide-to-destination mapping if appropriate, avoiding duplicated and hardcoded navigation logic across screens.
-- Preserve existing features, design, authentication, permissions, and project conventions.
-- Test every guide destination and action, including nested navigation, parameters, back navigation, disabled modules, unauthorized users, and unavailable destinations.
-- Verify coverage page by page. Do not consider this complete merely because the guide opens or some links work.
+## 2. MANDATORY INITIAL INSPECTION
 
-**Finish by providing a concise report:** pages and functions covered, navigation issues fixed, files changed, tests actually run and their results, and any remaining unsupported destinations.
+Before modifying anything, inspect the complete project structure and these five documents:
 
-Make the changes directly in the existing project. Do not stop after analysis, give me only recommendations, or ask me to perform unnecessary manual steps. Ask me only if a genuinely blocking requirement cannot be determined from the code.
+- `project-docs/deliverables/Current_System_Investigation.md`
+- `project-docs/deliverables/Proposed_UI_UX_Architecture.md`
+- `project-docs/deliverables/Proposed_Functional_Architecture.md`
+- `project-docs/deliverables/Implementation_Roadmap.md`
+- `project-docs/deliverables/Risk_and_Compatibility_Report.md`
 
+Also inspect:
 
-step2 
+- Laravel routes, controllers, services, middleware, models, policies and migrations.
+- Flutter screens, providers, repositories, API clients and models.
+- Database schemas, relationships, indexes and existing production data assumptions.
+- Authentication, RBAC, permissions and role assignments.
+- Existing quiz, assessment, curriculum, attendance and media workflows.
+- Existing queue configuration, Redis integration, cache implementation and file storage.
+- Existing tests, test fixtures and deployment configuration.
 
-Continue from our existing conversation and implementation state. Do not restart the project, repeat completed work, or write the final implementation prompt yet.
+### Inspection rules
 
-We have been finalizing additional requirements for Mezmur Zemseretee Hiwot. Preserve all previous decisions and inspect our existing discussion before proceeding.
+- Do not assume the deliverables accurately describe the current code.
+- Verify every important claim against actual implementation.
+- Do not recreate features that already work.
+- Do not replace working code merely to introduce a new architecture.
+- Identify existing dependencies before changing interfaces.
+- Preserve existing design conventions and application branding.
+- Do not create duplicate tables, routes, services or screens unnecessarily.
 
-The confirmed decisions include:
+Create an internal implementation checklist with:
 
-- **Service bonus:** Support fixed and percentage bonuses. Percentage bonuses use an explicitly selected eligible base component. Cap the final Mezmur attendance component at 100% only. A bonus must never inflate other departments' scores or criteria.
-- **Attendance security:** Only the authorized attendance taker can record attendance. Higher admins cannot bypass this restriction. Corrections require a reason and approval from the assigned HR approver. No self-approval; if there is a conflict, another authorized HR approver decides. Block corrections when no approver is assigned. HR-authorized assignment managers control approver assignments. Late attendance must be recorded accurately as attended late when applicable.
-- **Education and Mezmur access:** Authorized hidden top controllers and normal super admins can enable or disable these modules. Individual user settings override group defaults. Disabling a module preserves its data and disables access only. If only one module is enabled, open it directly without showing a module-selection page.
-- **Profession field:** Add a searchable, categorized profession selector during registration, including Other with a required custom description. Authorized admins can manage profession lists. Deactivated professions remain visible for existing users' saved records but cannot be selected by new users. Support filtering by category, exact profession, employment status, and custom Other text.
-- **Reminders:** Combine offline local alarms, server push notifications, and in-app notifications. Admins can enforce reminders for important programs; otherwise, users manage their preferences. Use standard reminder defaults plus authorized, configurable custom times per program. Only explicitly authorized admins can manage mandatory reminder policies. When offline, retain the last scheduled alarm and explain the limitation.
+`EXISTING_AND_WORKING | EXISTING_BUT_BROKEN | PARTIALLY_IMPLEMENTED | MISSING | BLOCKED`
 
-First, review the existing conversation and identify any remaining unresolved business rules, contradictions, or missing requirements. Ask only essential clarification questions, preferably grouped together. Do not implement these requirements or produce the final implementation prompt until we finish reviewing them.
+Then proceed with implementation.
 
-When we finalize everything, I will ask you to produce one complete, concise, implementation-focused prompt for this existing project. It must inspect current code, preserve working features, implement only missing or defective requirements, run local tests, build the mobile app, and report deployment requirements without claiming unverified success.
+## 3. NON-NEGOTIABLE DATA AND COMPATIBILITY RULES
+
+### 3.1 Zero destructive migrations
+
+- Never drop existing production tables.
+- Never delete historical student, attendance, quiz, assessment or financial records.
+- Never rename or remove existing production columns as a shortcut.
+- Prefer additive migrations, nullable fields, safe defaults and backward-compatible indexes.
+- Preserve `edu_question_banks`, `edu_quiz_draws` and their historical relationships.
+- Preserve completed quiz attempts, answers, grades, certificates and rankings.
+- Do not reset production data to make tests pass.
+- Every migration must have a documented recovery strategy.
+
+Before running any migration, inspect its impact and verify rollback and recovery options.
+
+### 3.2 Backward-compatible API
+
+Existing mobile versions 1.5.0–1.5.2 must continue functioning.
+
+- Preserve existing endpoint contracts.
+- Add new response fields without removing legacy fields.
+- Maintain both `id` and `assessment_id` wherever required.
+- Preserve existing response nesting, pagination, status codes and null-handling behavior.
+- Do not return fabricated empty collections to conceal broken endpoints.
+- Do not deprecate an endpoint until actual client dependencies are verified.
+
+Create regression fixtures representing legacy API responses and test old-client compatibility against the updated backend.
+
+### 3.3 Preserve authentication and authorization
+
+Never weaken security to make a feature work.
+
+Every protected API endpoint must independently validate permissions. Hiding a button in Flutter is not authorization.
+
+Separate administrative capabilities, including:
+
+- Global read access.
+- Curriculum management.
+- Lesson editing and publishing.
+- Student and teacher management.
+- Assessment and grade management.
+- Attendance management.
+- Signature viewing and exporting.
+
+Do not grant global write permissions simply because someone has an administrator-related role.
+
+## 4. REQUIRED IMPLEMENTATION WORK
+
+Execute the following engineering work packages in dependency order.
+
+### WORK PACKAGE 1 — API BACKWARD COMPATIBILITY
+
+**Objective:** Make the updated backend compatible with deployed legacy applications.
+
+Tasks:
+
+1. Inspect all existing Education API endpoints.
+2. Identify response fields and structures consumed by older Flutter versions.
+3. Implement additive response normalization.
+4. Preserve legacy identifiers and required fields.
+5. Check assessment creation, quiz listing, quiz details, quiz initialization, submission and result retrieval.
+6. Verify HTTP status codes and validation error structures.
+7. Add automated API contract tests for versions 1.5.0–1.5.2.
+8. Verify new clients can use the improved API without breaking old clients.
+
+**Acceptance criteria:**
+
+- Legacy response fixtures pass.
+- Modern clients receive the required new fields.
+- No existing endpoint silently loses functionality.
+- Existing historical assessment data remains unchanged.
+
+### WORK PACKAGE 2 — CURRICULUM AUTHORIZATION
+
+**Objective:** Implement secure, role-aware curriculum access without locking out legitimate users.
+
+Implement the following authorization hierarchy using actual roles and permissions:
+
+1. Authorized Super Admin / Education Director: global access according to granted permissions.
+2. Assigned Teacher: access to assigned courses, subjects and classes according to permissions.
+3. Enrolled Student: access to subjects associated with valid active enrollment.
+4. Historical Student: read-only access to permitted previous-year materials and records.
+5. Public Content: accessible when explicitly marked public.
+6. Unenrolled Student: friendly orientation screen without access to restricted curriculum.
+
+Handle:
+
+- Students transferred between classes.
+- Multiple simultaneous enrollments.
+- Teachers who are also students.
+- Pending student assignments.
+- Historical enrollments.
+- Multiple academic years.
+- Unauthorized direct API requests.
+
+Implement a centralized authorization service rather than duplicating inconsistent checks throughout controllers.
+
+**Security requirement:**
+
+The `EDU_STRICT_CURRICULUM_GATE` rollback mechanism must never restore known insecure legacy authorization behavior.
+
+If the new gate fails, use a verified secure fallback. If no safe fallback exists, deny restricted access and log the incident.
+
+**Acceptance criteria:**
+
+- Authorized users can access their permitted materials.
+- Grade 7 students cannot access restricted Grade 8 curriculum.
+- Teachers cannot edit courses outside their permissions.
+- Historical records remain accessible according to policy.
+- Unenrolled users receive an appropriate orientation experience instead of an unexplained blank screen.
+
+### WORK PACKAGE 3 — QUESTION BANK DEPRECATION AND QUIZ INTEGRITY
+
+**Objective:** Allow direct course quiz execution without damaging existing question bank data.
+
+Tasks:
+
+1. Inspect the existing question bank and direct quiz relationships.
+2. Preserve all question bank and quiz draw tables.
+3. Identify active quizzes still dependent on question banks.
+4. Inspect historical attempts and answer snapshots.
+5. Update quiz execution to use direct `quiz_id` questions where the quiz is configured for direct execution.
+6. Preserve historical question snapshots and grading behavior.
+7. Ensure active attempts can finish safely.
+8. Prevent accidental duplication of questions.
+9. Verify assessment creation, publication, attempts, submission and result calculations.
+10. Maintain historical quiz reporting and student certificates.
+
+Do not switch existing question-bank-dependent quizzes to a new execution path without verifying that their existing questions and attempts remain valid.
+
+**Acceptance criteria:**
+
+- Old question bank records remain intact.
+- New direct quizzes work.
+- Existing attempts remain readable.
+- Existing marks do not change unexpectedly.
+- No historical answer or grading information is lost.
+
+### WORK PACKAGE 4 — DASHBOARD CACHE AND DATABASE PERFORMANCE
+
+**Objective:** Protect the application during peak Sunday-school usage.
+
+Implement a reliable dashboard cache strategy.
+
+Requirements:
+
+1. Use a cache key that accounts for user identity and relevant enrollment or permission changes.
+2. Implement atomic locking for cache recomputation.
+3. Recheck the cache after acquiring the lock.
+4. Release locks safely.
+5. Handle lock contention without triggering duplicate expensive computations.
+6. Prevent stale dashboard information from persisting after important data changes.
+7. Invalidate relevant caches after enrollment, assessment, attendance and curriculum updates.
+8. Support a safe cache-disabled mode for troubleshooting.
+
+Do not use nested cache operations that fail to coordinate cache misses correctly.
+
+Do not assume Redis exists without checking the actual hosting configuration.
+
+If Redis is unavailable, implement a documented alternative compatible with the production environment.
+
+**Acceptance criteria:**
+
+- Concurrent dashboard requests do not cause uncontrolled recomputation.
+- Cache invalidation works.
+- Permission changes do not leave unauthorized cached data accessible.
+- Dashboard results remain accurate.
+
+### WORK PACKAGE 5 — OFFLINE ATTENDANCE SYNCHRONIZATION
+
+**Objective:** Make offline attendance synchronization reliable, auditable and idempotent.
+
+Implement:
+
+1. Deterministic attendance session identification using program, schedule and session date.
+2. Unique idempotency identifiers for offline synchronization records.
+3. Server-managed record revisions or equivalent optimistic concurrency control.
+4. Safe synchronization of offline batches.
+5. Conflict detection when multiple devices or administrators update the same attendance record.
+6. Immutable audit history for changes and conflicts.
+7. Duplicate submission prevention.
+8. Partial-batch recovery.
+9. Retry-safe synchronization.
+10. Clear synchronization status for Flutter users.
+
+**Critical conflict-resolution rule:**
+
+Do not trust client timestamps as the sole authority for deciding which attendance record wins.
+
+Do not automatically overwrite an administrator's authoritative update because an offline device reports a later local timestamp.
+
+Use revision comparison and explicit conflict handling. Preserve both versions and record the resolution decision.
+
+Audit records must include, where available:
+
+- Session ID.
+- Member ID.
+- Previous status.
+- New status.
+- Actor ID.
+- Device identifier.
+- Idempotency key.
+- Server timestamp.
+- Conflict resolution result.
+
+**Acceptance criteria:**
+
+- Repeated synchronization does not create duplicates.
+- Concurrent updates do not silently destroy information.
+- Conflicts are auditable.
+- Interrupted batches can resume.
+- All successfully accepted attendance changes are reflected consistently.
+
+### WORK PACKAGE 6 — FFMPEG MEDIA MIGRATION AND QUEUE RESILIENCE
+
+**Objective:** Process media without exhausting server resources or disrupting API availability.
+
+Tasks:
+
+1. Inspect existing media storage and conversion workflows.
+2. Verify FFmpeg installation and execution permissions.
+3. Implement persistent migration job records.
+4. Process files through controlled background workers.
+5. Set configurable worker concurrency and per-file timeouts.
+6. Prevent duplicate processing.
+7. Implement retry and failure states.
+8. Detect already-converted files.
+9. Preserve original files until successful verification.
+10. Verify output file integrity before marking migration complete.
+11. Handle worker restarts.
+12. Handle Redis or queue unavailability.
+13. Provide safe recovery for interrupted migrations.
+
+Use `--concurrency=1` as an initial conservative setting only if compatible with the hosting environment.
+
+Do not claim a specific CPU ceiling without measurement.
+
+Do not move expensive FFmpeg processing into normal web requests as an automatic fallback.
+
+If background processing is unavailable, preserve the pending job and expose a controlled recovery mechanism rather than overwhelming the API server.
+
+**Acceptance criteria:**
+
+- Jobs survive worker restarts.
+- Duplicate jobs do not create duplicate conversions.
+- Failed jobs can retry safely.
+- Original media remains recoverable.
+- API performance remains within measured acceptable limits.
+
+### WORK PACKAGE 7 — UNENROLLED STUDENT EXPERIENCE
+
+**Objective:** Prevent new or unassigned students from encountering a dead-end screen.
+
+Implement an attractive orientation experience consistent with the existing Education UI architecture.
+
+Requirements:
+
+- Clear welcome message.
+- Explanation that no active class has been assigned.
+- Instructions to contact the Sunday-school administrator.
+- Public spiritual publications and other explicitly public resources remain accessible.
+- Restricted grade materials remain protected.
+- Refresh enrollment status when an administrator assigns the student.
+- Avoid unnecessary logout or reinstall requirements.
+
+Use the application's existing language settings and localization architecture.
+
+### WORK PACKAGE 8 — ROLLBACK AND FEATURE FLAGS
+
+Implement safe rollback mechanisms for each work package.
+
+Requirements:
+
+- Feature flags must be controlled and validated on the backend where security-sensitive.
+- Disabling a new feature must not delete associated data.
+- Old and new workflows must not corrupt each other's records.
+- Preserve the legacy attendance interface until the new attendance workflow is verified.
+- Preserve the legacy magazine quiz editor until the unified editor passes regression tests.
+- Disable dashboard caching safely without changing authorization.
+- Provide safe media worker recovery without synchronous overload.
+- Document exact rollback commands and prerequisites.
+
+Every rollback must be tested where practical.
+
+## 5. CROSS-FEATURE REGRESSION TESTING
+
+Do not test only the newly modified screen or endpoint.
+
+Verify the following existing application workflows:
+
+- User login and session management.
+- User profile and permissions.
+- Education dashboard.
+- Classes and enrollment.
+- Curriculum and lesson access.
+- Lesson attachments.
+- Quiz creation and publication.
+- Quiz attempts and submissions.
+- Historical marks and reports.
+- Magazine quizzes.
+- Student attendance.
+- Program attendance.
+- Offline attendance synchronization.
+- Attendance signatures and exports.
+- Notifications.
+- Public publications.
+- Audio uploads and playback.
+- Media downloads and offline access.
+
+Test both modern and legacy API contracts.
+
+Test direct API access, not just the Flutter interface.
+
+Do not modify unrelated working functionality.
+
+## 6. REQUIRED AUTOMATED TEST MATRIX
+
+Create or extend tests for these scenarios:
+
+| Test category | Required scenarios |
+|---|---|
+| API compatibility | Legacy and modern response contracts |
+| Authorization | Super Admin, Education Admin, Teacher, Student, transferred and unenrolled users |
+| Curriculum | Grade restrictions, multiple enrollment and historical access |
+| Quiz integrity | Direct questions, question banks, historical attempts and active attempts |
+| Database | Additive migrations, existing data preservation and rollback recovery |
+| Cache | Concurrent requests, lock contention and invalidation |
+| Attendance | Offline batches, duplicate retries, concurrent updates and conflicts |
+| Media | Worker restart, timeout, duplicate jobs and retry |
+| Security | Unauthorized API access, private files and signature downloads |
+| Regression | Existing Education and Mezmur workflows |
+
+Include realistic edge cases.
+
+Use isolated test databases and fixtures. Never use production data as a disposable test environment.
+
+## 7. FLUTTER IMPLEMENTATION REQUIREMENTS
+
+Where backend changes require client changes:
+
+- Update the existing API models and repositories.
+- Maintain compatibility with existing API responses.
+- Handle loading, success, empty, error and offline states.
+- Avoid unnecessary UI redesign.
+- Preserve the approved UI/UX architecture.
+- Ensure unauthorized users cannot access restricted screens.
+- Handle token expiration and retry behavior safely.
+- Display understandable synchronization and processing states.
+- Maintain existing Android compatibility.
+
+Build the correct Android APK when implementation is ready for release verification.
+
+Check `versionCode`, `versionName`, package ID and backend compatibility.
+
+## 8. PERFORMANCE AND SECURITY VERIFICATION
+
+Measure actual behavior rather than making assumptions.
+
+Where the hosting environment supports profiling, measure:
+
+- Dashboard response time.
+- Database query count.
+- Concurrent dashboard requests.
+- Cache hit/miss behavior.
+- Queue processing duration.
+- FFmpeg resource utilization.
+- Attendance batch processing.
+- API response latency under representative load.
+
+Security verification must include:
+
+- Authentication enforcement.
+- RBAC enforcement.
+- Direct API authorization.
+- Private storage protection.
+- Signature access control.
+- Input validation.
+- Duplicate request handling.
+- Audit-log integrity.
+
+Do not report performance targets as achieved unless supported by actual measurements.
+
+## 9. IMPLEMENTATION EXECUTION RULES
+
+Execute the work in dependency order.
+
+For each work package:
+
+1. Inspect the existing implementation.
+2. Identify the precise files and dependencies involved.
+3. Implement the required changes.
+4. Add or update automated tests.
+5. Run the relevant tests.
+6. Fix failures caused by your changes.
+7. Run regression tests for related functionality.
+8. Inspect the final code for security and data integrity.
+9. Record the completed work and evidence.
+10. Proceed to the next work package.
+
+If a test fails:
+
+- Identify whether it is an existing baseline failure or an implementation regression.
+- Investigate its root cause.
+- Do not hide failures by weakening assertions or deleting tests.
+- Fix implementation regressions before proceeding.
+- Document genuine environmental blockers.
+
+Do not stop after the first successful test.
+
+Do not mark unfinished work as complete.
+
+If an architectural decision cannot be made safely from the existing code and deliverables, document the precise conflict and ask only for the decision that genuinely requires my approval.
+
+## 10. REQUIRED DOCUMENTATION UPDATES
+
+Maintain the existing five deliverables.
+
+Update relevant documents to reflect the actual implementation, including:
+
+- Changed architecture.
+- Modified files.
+- Database changes.
+- API contract changes.
+- Security decisions.
+- Feature flags.
+- Test results.
+- Known limitations.
+- Rollback procedures.
+
+Create:
+
+`project-docs/implementation/Implementation_Report.md`
+
+`project-docs/implementation/Test_and_Regression_Report.md`
+
+`project-docs/implementation/Database_and_Migration_Report.md`
+
+`project-docs/implementation/Deployment_Readiness_Report.md`
+
+These documents must describe actual work and verified outcomes, not planned or assumed outcomes.
+
+## 11. FINAL COMPLETION REPORT
+
+When implementation is finished, provide a concise but detailed report containing:
+
+### A. Implementation summary
+What was actually implemented and which work packages are complete.
+
+### B. Files changed
+Important backend, Flutter, database, configuration and test files.
+
+### C. Database safety
+Migrations executed, tables preserved, historical records checked and recovery procedures.
+
+### D. API compatibility
+Which legacy contracts were verified and test results.
+
+### E. Security
+Roles and permissions tested, authorization findings and resolved vulnerabilities.
+
+### F. Testing
+Exact commands executed, number of passed and failed tests, and any tests blocked by the environment.
+
+### G. Performance
+Actual measured results, testing environment and remaining limitations.
+
+### H. Remaining work
+Only genuine incomplete items, blockers and unresolved decisions.
+
+### I. Deployment readiness
+One of these exact statuses:
+
+- READY FOR RELEASE APPROVAL
+- NOT READY — ISSUES REMAIN
+- BLOCKED — USER DECISION REQUIRED
+
+## 12. STRICT DEPLOYMENT GATE
+
+**Implementation and deployment are separate responsibilities.**
+
+You are authorized to implement, test, prepare builds and investigate deployment readiness.
+
+You are NOT authorized to deploy automatically.
+
+Before requesting release approval, verify:
+
+- All required tests pass.
+- No critical security issue remains.
+- Database migrations and recovery procedures are verified.
+- Historical data integrity is preserved.
+- Legacy mobile API compatibility is verified.
+- Backend and Flutter versions are compatible.
+- The correct Android APK builds successfully.
+- Website download configuration is identified.
+- Deployment and rollback instructions are ready.
+
+After presenting the implementation and test reports, STOP and request my explicit approval.
+
+Only after I approve deployment:
+
+1. Back up the required production data.
+2. Deploy the verified backend.
+3. Apply only approved migrations.
+4. Build and deploy the matching APK.
+5. Upload the correct APK to the actual website download location.
+6. Verify that the website serves the correct installable APK.
+7. Verify package ID, versionCode and versionName.
+8. Check production API compatibility.
+9. Perform post-deployment smoke tests.
+10. Report deployment results and any issues.
+
+Never deploy an untested build, incomplete migration or incompatible APK.
+
+---
+
+# FINAL EXECUTION INSTRUCTION
+
+Start by inspecting the five existing engineering deliverables and the actual MH-app-1.5.3 source code.
+
+Then execute the engineering work described above.
+
+**Do not return another theoretical architecture proposal. Do not merely explain what should be done. Do not stop at planning. Implement, verify, test, fix and document the actual changes.**
+
+Prioritize data integrity, backward compatibility, security and preservation of existing working features over implementation speed.
+
+Your final responsibility is to deliver a genuinely working, tested and release-ready application—not simply a completed checklist.
+
+**STOP BEFORE PRODUCTION DEPLOYMENT AND WAIT FOR MY EXPLICIT APPROVAL.**

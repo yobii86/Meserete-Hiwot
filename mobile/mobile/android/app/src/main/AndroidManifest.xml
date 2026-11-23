@@ -109,6 +109,28 @@
             </intent-filter>
         </receiver>
 
+        <!-- Native Program Alarms (WakeLock, AlarmManager, Looping MediaPlayer on STREAM_ALARM) -->
+        <receiver
+            android:name=".alarm.AlarmReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.mezmur.zelideta.ACTION_TRIGGER_ALARM" />
+                <action android:name="com.mezmur.zelideta.ACTION_STOP_ALARM" />
+                <action android:name="com.mezmur.zelideta.ACTION_SNOOZE_ALARM" />
+                <action android:name="android.intent.action.BOOT_COMPLETED" />
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="com.htc.intent.action.QUICKBOOT_POWERON" />
+                <action android:name="android.intent.action.TIME_SET" />
+                <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+            </intent-filter>
+        </receiver>
+
+        <service
+            android:name=".alarm.AlarmService"
+            android:foregroundServiceType="mediaPlayback"
+            android:exported="false" />
+
         <!-- Sinksar Compact Home-Screen Widget (2x1 / 2x2) -->
         <receiver
             android:name=".widget.SinksarCompactWidgetProvider"

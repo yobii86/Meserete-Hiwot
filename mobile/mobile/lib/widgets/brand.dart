@@ -108,7 +108,7 @@ class ModuleBackgroundWrapper extends StatelessWidget {
       ModuleBackgroundKind.general => 'assets/images/general_pattern.png',
     };
     final bgColor = isEdu
-        ? (isDark ? const Color(0xFF1A1113) : AppColors.eduCream)
+        ? (isDark ? const Color(0xFF1A1113) : const Color(0xFFFFFFFF))
         : (isDark ? const Color(0xFF1A1113) : const Color(0xFFFBF9F5));
     final patternOpacity = isEdu
         ? (isDark ? 0.08 : 0.04)

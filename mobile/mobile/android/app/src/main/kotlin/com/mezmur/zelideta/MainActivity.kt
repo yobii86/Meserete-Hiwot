@@ -13,6 +13,9 @@ import android.os.Bundle
 import android.os.PowerManager
 import android.provider.Settings
 import android.view.WindowManager
+import com.mezmur.zelideta.alarm.AlarmReceiver
+import com.mezmur.zelideta.alarm.AlarmScheduler
+import com.mezmur.zelideta.alarm.AlarmService
 import com.mezmur.zelideta.widget.SinksarCompactWidgetProvider
 import com.mezmur.zelideta.widget.SinksarExpandedWidgetProvider
 import com.mezmur.zelideta.widget.SinksarWidgetData
@@ -24,12 +27,14 @@ import io.flutter.plugin.common.MethodChannel
 class MainActivity : AudioServiceFragmentActivity() {
 
     private var sinksChannel: MethodChannel? = null
+    private var alarmChannel: MethodChannel? = null
     private var pendingLaunchPayload: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         wakeAndUnlock(intent)
         handleWidgetIntent(intent)
+        handleAlarmIntent(intent)
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -37,6 +42,21 @@ class MainActivity : AudioServiceFragmentActivity() {
         setIntent(intent)
         wakeAndUnlock(intent)
         handleWidgetIntent(intent)
+        handleAlarmIntent(intent)
+    }
+
+    private fun handleAlarmIntent(intent: Intent?) {
+        if (intent == null) return
+        if (intent.action == "com.mezmur.zelideta.OPEN_ALARM") {
+            val payload = intent.getStringExtra("payload") ?: "alarm:${intent.getIntExtra("program_id", 0)}"
+            pendingLaunchPayload = payload
+            alarmChannel?.invokeMethod("onAlarmTriggered", mapOf(
+                "payload" to payload,
+                "alarm_id" to intent.getIntExtra("alarm_id", 0),
+                "title" to intent.getStringExtra("title"),
+                "body" to intent.getStringExtra("body")
+            ))
+        }
     }
 
     private fun wakeAndUnlock(intent: Intent?) {
@@ -122,7 +142,7 @@ class MainActivity : AudioServiceFragmentActivity() {
                         try {
                             startActivity(intent)
                             result.success(true)
-                        } catch (_: Exception) {
+                        } catch (e: Exception) {
                             val fallback = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS).apply {
                                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
                             }
@@ -156,6 +176,95 @@ class MainActivity : AudioServiceFragmentActivity() {
                 "turnScreenOnAndUnlock" -> {
                     wakeAndUnlock(intent)
                     result.success(true)
+                }
+                else -> result.notImplemented()
+            }
+        }
+
+        // Native Alarm channel
+        val alarmChan = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "mezmur/alarm")
+        alarmChannel = alarmChan
+        alarmChan.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "scheduleAlarm" -> {
+                    val id = call.argument<Int>("id") ?: 0
+                    val time = (call.argument<Number>("timestampMs"))?.toLong() ?: 0L
+                    val programId = call.argument<Int>("programId") ?: 0
+                    val title = call.argument<String>("title") ?: "የመርሐ ግብር ማንቂያ"
+                    val body = call.argument<String>("body") ?: ""
+                    val payload = call.argument<String>("payload") ?: "alarm:$programId"
+
+                    val ok = AlarmScheduler.schedule(this, id, time, programId, title, body, payload)
+                    result.success(ok)
+                }
+                "cancelAlarm" -> {
+                    val id = call.argument<Int>("id") ?: 0
+                    AlarmScheduler.cancel(this, id)
+                    result.success(true)
+                }
+                "cancelAllAlarms" -> {
+                    AlarmScheduler.cancelAll(this)
+                    result.success(true)
+                }
+                "stopAlarm" -> {
+                    AlarmService.stop(this)
+                    result.success(true)
+                }
+                "snoozeAlarm" -> {
+                    val id = call.argument<Int>("id") ?: 0
+                    val payload = call.argument<String>("payload") ?: "alarm:0"
+                    val title = call.argument<String>("title") ?: "የመርሐ ግብር ማንቂያ"
+                    val body = call.argument<String>("body") ?: ""
+                    AlarmService.snooze(this, id, payload, title, body)
+                    result.success(true)
+                }
+                "isAlarmRinging" -> {
+                    result.success(AlarmService.isRinging())
+                }
+                "canScheduleExactAlarms" -> {
+                    result.success(AlarmScheduler.canScheduleExactAlarms(this))
+                }
+                "canUseFullScreenIntent" -> {
+                    result.success(AlarmScheduler.canUseFullScreenIntent(this))
+                }
+                "openExactAlarmSettings" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                        val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                            data = Uri.parse("package:$packageName")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        startActivity(intent)
+                        result.success(true)
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "openFullScreenIntentSettings" -> {
+                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                        val intent = Intent(Settings.ACTION_MANAGE_APP_USE_FULL_SCREEN_INTENT).apply {
+                            data = Uri.parse("package:$packageName")
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        try {
+                            startActivity(intent)
+                            result.success(true)
+                        } catch (e: Exception) {
+                            result.success(false)
+                        }
+                    } else {
+                        result.success(false)
+                    }
+                }
+                "testAlarm" -> {
+                    val delaySeconds = call.argument<Int>("delaySeconds") ?: 2
+                    val title = call.argument<String>("title") ?: "የሙከራ መርሐ ግብር ማንቂያ"
+                    val body = call.argument<String>("body") ?: "መርሐ ግብር: ቅዳሴ (ከ10 ደቂቃ በኋላ)"
+                    val testTime = System.currentTimeMillis() + (delaySeconds * 1000L)
+                    val ok = AlarmScheduler.schedule(this, 99999, testTime, 0, title, body, "alarm:0")
+                    result.success(ok)
+                }
+                "getScheduledAlarms" -> {
+                    result.success(AlarmScheduler.getAllScheduled(this))
                 }
                 else -> result.notImplemented()
             }

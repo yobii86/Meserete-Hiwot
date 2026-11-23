@@ -16,12 +16,24 @@ final class Upload
     {
         $r = request();
         $file = $r->file($field);
+        if (! $file && $r->hasFile($kind)) {
+            $file = $r->file($kind);
+        }
+        if (! $file) {
+            $allFiles = $r->allFiles();
+            if (! empty($allFiles)) {
+                $first = reset($allFiles);
+                if ($first instanceof UploadedFile) {
+                    $file = $first;
+                }
+            }
+        }
         if (is_array($file)) {
             throw ApiError::badRequest('INVALID_UPLOAD', 'Invalid upload');
         }
         if (! $file instanceof UploadedFile) {
             if ($r->hasFile($field) === false && isset($_FILES[$field]) && ($_FILES[$field]['error'] ?? 0) === UPLOAD_ERR_INI_SIZE) {
-                throw new ApiError(413, 'FILE_TOO_LARGE', 'File is too large');
+                throw new ApiError(413, 'FILE_TOO_LARGE', 'The uploaded file exceeds the server maximum upload limit. Please select a smaller or compressed file.');
             }
             if ($required) {
                 throw ApiError::badRequest('FILE_REQUIRED', 'File is required');
@@ -30,13 +42,14 @@ final class Upload
         }
         if (! $file->isValid()) {
             if (in_array($file->getError(), [UPLOAD_ERR_INI_SIZE, UPLOAD_ERR_FORM_SIZE], true)) {
-                throw new ApiError(413, 'FILE_TOO_LARGE', 'File is too large');
+                throw new ApiError(413, 'FILE_TOO_LARGE', 'The uploaded file exceeds the server maximum upload limit. Please select a smaller or compressed file.');
             }
             throw ApiError::badRequest('INVALID_UPLOAD', 'Invalid upload');
         }
         $max = Storage::kinds()[$kind]['max'];
         if ($file->getSize() > $max) {
-            throw new ApiError(413, 'FILE_TOO_LARGE', 'File is too large');
+            $maxMb = round($max / (1024 * 1024));
+            throw new ApiError(413, 'FILE_TOO_LARGE', "File is too large (maximum size is {$maxMb}MB)");
         }
         $mime = (string) $file->getClientMimeType();
         $allowed = match ($kind) {
@@ -45,7 +58,8 @@ final class Upload
             'chat' => (bool) preg_match('#^(image|audio|video)/|^application/(pdf|vnd\.openxmlformats-officedocument\.)#', $mime),
             'book' => (bool) preg_match('#^application/pdf$#', $mime),
             'lesson' => (bool) preg_match('#^(application/pdf|image/|audio/|application/vnd\.openxmlformats-officedocument\.)#', $mime),
-            'project', 'document' =>(bool) preg_match('#^(application/pdf|image/|application/vnd\.openxmlformats-officedocument\.)#', $mime),
+            'project', 'document', 'assignment', 'submission' => (bool) preg_match('#^(application/pdf|image/|audio/|application/vnd\.openxmlformats-officedocument\.)#', $mime),
+            'receipt', 'contribution_receipt' => (bool) preg_match('#^(image/|application/pdf$)#', $mime),
             default => str_starts_with($mime, 'image/'),
         };
         if (! $allowed && $mime !== 'application/octet-stream') {
@@ -57,6 +71,6 @@ final class Upload
     /** The upload only when the request is multipart (optional attachments). */
     public static function optional(string $kind, string $field = 'file'): ?UploadedFile
     {
-        return str_starts_with((string) request()->header('Content-Type'), 'multipart/form-data') ? self::single($kind, $field) : null;
+        return str_starts_with((string) request()->header('Content-Type'), 'multipart/form-data') ? self::single($kind, $field, false) : null;
     }
 }

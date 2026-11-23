@@ -964,6 +964,7 @@ class _EduQuizEditorScreenState extends ConsumerState<EduQuizEditorScreen> {
     final l = context.l10n;
     final q = _quiz;
     final status = asStr(q?['status']);
+    final isMagazine = asStr(q?['kind']) == 'magazine' || q?['magazine_id'] != null;
     return PatternScaffold(
       appBar: AppBar(
         title: Text(q == null ? l.elQuiz : asStr(q['title']) ?? ''),
@@ -1000,6 +1001,31 @@ class _EduQuizEditorScreenState extends ConsumerState<EduQuizEditorScreen> {
                       if (status == 'closed') OutlinedButton(onPressed: () => _saveSettings(status: 'published'), child: Text(l.elReopenQuiz)),
                     ]),
                   ),
+                  if (isMagazine) ...[
+                    const SizedBox(height: 10),
+                    Container(
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: const Color(0xFFFFF8E1),
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: AppColors.gold.withValues(alpha: 0.5)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.stars_rounded, color: AppColors.maroon, size: 20),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              Localizations.localeOf(context).languageCode == 'en'
+                                  ? 'Magazine Quiz: locked to 1 attempt with a standard 7-day availability window.'
+                                  : 'የሰሌዳ መጽሔት ፈተና፡ 1 ሙከራ ብቻ የተፈቀደ ሲሆን ለ7 ቀናት ክፍት ሆኖ ይቆያል።',
+                              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600, color: Color(0xFF650D20)),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                   SectionHeader(title: l.elQuizSettings),
                   TextField(controller: _title, decoration: InputDecoration(labelText: '${l.elTitle} (አማርኛ) *')),
                   const SizedBox(height: 10),
@@ -1018,10 +1044,15 @@ class _EduQuizEditorScreenState extends ConsumerState<EduQuizEditorScreen> {
                     const SizedBox(width: 10),
                     Expanded(
                       child: DropdownButtonFormField<int>(
-                        initialValue: _maxAttempts.clamp(1, 10),
-                        decoration: InputDecoration(labelText: l.elMaxAttempts),
-                        items: [for (var i = 1; i <= 10; i++) DropdownMenuItem(value: i, child: Text('$i'))],
-                        onChanged: _locked ? null : (v) => setState(() => _maxAttempts = (v ?? 1).clamp(1, 10)),
+                        initialValue: isMagazine ? 1 : _maxAttempts.clamp(1, 10),
+                        decoration: InputDecoration(
+                          labelText: l.elMaxAttempts,
+                          helperText: isMagazine ? (Localizations.localeOf(context).languageCode == 'en' ? 'Locked to 1 for magazine' : 'ለመጽሔት 1 ብቻ ነው') : null,
+                        ),
+                        items: isMagazine
+                            ? [const DropdownMenuItem(value: 1, child: Text('1'))]
+                            : [for (var i = 1; i <= 10; i++) DropdownMenuItem(value: i, child: Text('$i'))],
+                        onChanged: (_locked || isMagazine) ? null : (v) => setState(() => _maxAttempts = (v ?? 1).clamp(1, 10)),
                       ),
                     ),
                   ]),
@@ -1042,12 +1073,12 @@ class _EduQuizEditorScreenState extends ConsumerState<EduQuizEditorScreen> {
                   ),
                   const SizedBox(height: 10),
                   DropdownButtonFormField<int?>(
-                    initialValue: _assessments.any((a) => asInt(a['id']) == _assessmentId) ? _assessmentId : null,
+                    initialValue: _assessments.any((a) => (asInt(a['assessment_id']) ?? asInt(a['id'])) == _assessmentId) ? _assessmentId : null,
                     isExpanded: true,
                     decoration: InputDecoration(labelText: l.elLinkAssessment, helperText: l.elLinkAssessmentHint, helperMaxLines: 3),
                     items: [
                       DropdownMenuItem<int?>(value: null, child: Text(l.elNotOfficial)),
-                      for (final a in _assessments) DropdownMenuItem<int?>(value: asInt(a['id']), child: Text('${a['title']} (/${_n(a['max_score'])})', overflow: TextOverflow.ellipsis)),
+                      for (final a in _assessments) DropdownMenuItem<int?>(value: asInt(a['assessment_id']) ?? asInt(a['id']), child: Text('${a['title']} (/${_n(a['max_score'])})', overflow: TextOverflow.ellipsis)),
                     ],
                     onChanged: _locked ? null : (v) => setState(() => _assessmentId = v),
                   ),
@@ -1078,6 +1109,7 @@ class _EduQuizEditorScreenState extends ConsumerState<EduQuizEditorScreen> {
                       locked: _locked,
                       onChanged: () => setState(() {}),
                       onRemove: () => setState(() => _questions.removeAt(i).dispose()),
+                      onDuplicate: () => setState(() => _questions.insert(i + 1, d.clone())),
                     ),
                   if (!_locked) ...[
                     const SizedBox(height: 8),
@@ -1181,6 +1213,22 @@ class _QDraft {
     };
   }
 
+  _QDraft clone() {
+    return _QDraft(
+      type: type,
+      prompt: TextEditingController(text: prompt.text),
+      promptEn: TextEditingController(text: promptEn.text),
+      options: [for (final o in options) TextEditingController(text: o.text)],
+      explanation: TextEditingController(text: explanation.text),
+      explanationEn: TextEditingController(text: explanationEn.text),
+      points: TextEditingController(text: points.text),
+      single: single,
+      multi: Set.from(multi),
+      truth: truth,
+      model: model.text,
+    );
+  }
+
   void dispose() {
     prompt.dispose();
     promptEn.dispose();
@@ -1195,12 +1243,21 @@ class _QDraft {
 }
 
 class _QuestionEditor extends StatelessWidget {
-  const _QuestionEditor({super.key, required this.index, required this.draft, required this.locked, required this.onChanged, required this.onRemove});
+  const _QuestionEditor({
+    super.key,
+    required this.index,
+    required this.draft,
+    required this.locked,
+    required this.onChanged,
+    required this.onRemove,
+    this.onDuplicate,
+  });
   final int index;
   final _QDraft draft;
   final bool locked;
   final VoidCallback onChanged;
   final VoidCallback onRemove;
+  final VoidCallback? onDuplicate;
 
   @override
   Widget build(BuildContext context) {
@@ -1230,6 +1287,12 @@ class _QuestionEditor extends StatelessWidget {
                       onChanged();
                     },
             ),
+            if (!locked && onDuplicate != null)
+              IconButton(
+                tooltip: Localizations.localeOf(context).languageCode == 'en' ? 'Duplicate question' : 'ጥያቄ ቅዳ',
+                icon: const Icon(Icons.copy_rounded, size: 18),
+                onPressed: onDuplicate,
+              ),
             if (!locked) IconButton(tooltip: l.delete, icon: const Icon(Icons.close_rounded), onPressed: onRemove),
           ]),
           TextField(controller: d.prompt, enabled: !locked, maxLines: 3, minLines: 1, decoration: InputDecoration(labelText: '${l.elPrompt} (አማርኛ) *')),

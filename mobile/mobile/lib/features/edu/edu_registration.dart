@@ -17,6 +17,7 @@ import '../guidance/contextual_help_sheet.dart';
 import '../members/member_form.dart' show memberGroupLabel;
 import 'edu_academics.dart' show EduCourseTeachersSheet;
 import 'edu_screens.dart' show programLabel;
+import 'edu_formatters.dart';
 import '../../core/member_groups.dart';
 
 final _regClassesProvider = FutureProvider.autoDispose<List<Json>>((ref) => ref.watch(libraryRepositoryProvider).registrationClasses());
@@ -108,7 +109,18 @@ class _EduRegistrationScreenState extends ConsumerState<EduRegistrationScreen> {
               initialValue: id,
               isExpanded: true,
               decoration: InputDecoration(labelText: l.regChooseClass),
-              items: [for (final c in classes) DropdownMenuItem(value: asIntOr(c['id']), child: Text([c['name'], ?asStr(c['term'])].join(' · '), overflow: TextOverflow.ellipsis))],
+              items: [
+                for (final c in classes)
+                  DropdownMenuItem(
+                    value: asIntOr(c['id']),
+                    child: Text(
+                      eduClassSubtitle(c, l).isNotEmpty
+                          ? '${eduClassName(c)} · ${eduClassSubtitle(c, l)}'
+                          : eduClassName(c),
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
               onChanged: (v) => setState(() => _classId = v),
             ),
             const SizedBox(height: 10),
@@ -245,84 +257,249 @@ class _NewMemberDialogState extends State<_NewMemberDialog> {
   }
 }
 
-/// Every course of every active class (teacher, class); a course opens its class to edit it
-/// (courses, schedule, attendance takers are managed inside the class).
-class EduCoursesScreen extends ConsumerWidget {
+/// Every course of every active class (teacher, class); supports Grade 1-12 filtering,
+/// direct course editing with pre-populated fields, and teacher assignments.
+class EduCoursesScreen extends ConsumerStatefulWidget {
   const EduCoursesScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
+  ConsumerState<EduCoursesScreen> createState() => _EduCoursesScreenState();
+}
+
+class _EduCoursesScreenState extends ConsumerState<EduCoursesScreen> {
+  int? _selectedClassId;
+
+  Future<void> _editCourse(Json course) async {
+    final l = context.l10n;
+    final isEn = l.isEn;
+    final courseId = asIntOr(course['id']);
+    final name = TextEditingController(text: asStr(course['name']) ?? '');
+    final code = TextEditingController(text: asStr(course['code']) ?? '');
+    var status = asStr(course['status']) ?? 'active';
+    var mode = asStr(course['mode']) ?? 'physical';
+    var passMark = TextEditingController(text: course['pass_mark'] != null ? '${course['pass_mark']}' : '50');
+    int? teacherId = asInt(course['teacher_user_id']) ?? asInt(asJson(course['teacher'])['id']);
+    String? teacherName = asStr(course['teacher_name']) ?? asStr(asJson(course['teacher'])['full_name']);
+
+    final ok = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) => AlertDialog(
+          scrollable: true,
+          title: Text(isEn ? 'Edit Course Offering' : 'የኮርስ መረጃ ማስተካከያ'),
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              TextField(
+                controller: name,
+                decoration: InputDecoration(
+                  labelText: isEn ? 'Course Name' : 'የኮርሱ ስም',
+                ),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: code,
+                decoration: InputDecoration(
+                  labelText: isEn ? 'Course Code' : 'የኮርሱ መለያ ኮድ',
+                ),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                initialValue: status,
+                decoration: InputDecoration(labelText: l.status),
+                items: [
+                  DropdownMenuItem(value: 'active', child: Text(l.active)),
+                  DropdownMenuItem(value: 'inactive', child: Text(l.inactive)),
+                  DropdownMenuItem(value: 'archived', child: Text(l.eaArchived)),
+                ],
+                onChanged: (v) => setS(() => status = v ?? 'active'),
+              ),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                initialValue: mode,
+                decoration: InputDecoration(labelText: l.eduMode),
+                items: [
+                  DropdownMenuItem(value: 'physical', child: Text(l.eduModePhysical)),
+                  DropdownMenuItem(value: 'online', child: Text(l.eduModeOnline)),
+                  DropdownMenuItem(value: 'hybrid', child: Text(l.eduModeHybrid)),
+                ],
+                onChanged: (v) => setS(() => mode = v ?? 'physical'),
+              ),
+              const SizedBox(height: 10),
+              TextField(
+                controller: passMark,
+                keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                decoration: InputDecoration(
+                  labelText: l.eduPassMark,
+                  hintText: '50',
+                ),
+              ),
+              const SizedBox(height: 12),
+              ListTile(
+                contentPadding: EdgeInsets.zero,
+                leading: const Icon(Icons.co_present_rounded, color: AppColors.maroon),
+                title: Text(teacherName ?? (isEn ? 'No teacher assigned' : 'አስተማሪ አልተመደበም')),
+                subtitle: Text(l.eduTeacher),
+                trailing: TextButton(
+                  onPressed: () async {
+                    final sel = await pickUsers(ctx, multiple: false, title: l.eduTeacher);
+                    if (sel == null || sel.ids.isEmpty) return;
+                    setS(() {
+                      teacherId = sel.ids.first;
+                      teacherName = sel.names[teacherId] ?? '#$teacherId';
+                    });
+                  },
+                  child: Text(l.select),
+                ),
+              ),
+            ],
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(l.cancel),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: Text(l.save),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (ok != true || !mounted) return;
+
+    final repo = ref.read(eduRepositoryProvider);
+    final body = {
+      'name': name.text.trim().isNotEmpty ? name.text.trim() : course['name'],
+      'code': code.text.trim().isEmpty ? null : code.text.trim(),
+      'status': status,
+      'mode': mode,
+      'pass_mark': double.tryParse(passMark.text.trim()) ?? 50.0,
+      'teacher_user_id': teacherId,
+    };
+
+    await runWithProgress(
+      context,
+      () => repo.updateCourse(courseId, body),
+      success: l.saved,
+    );
+    ref.invalidate(_regClassesProvider);
+  }
+
+  @override
+  Widget build(BuildContext context) {
     final l = context.l10n;
     final isEn = l.isEn;
     final canManage = ref.watch(currentUserProvider)?.can(Perm.educationManage) ?? false;
+
     return AdminScaffold(
-      title: isEn ? 'Teacher Assignments' : 'የአስተማሪዎች ምደባ',
+      title: isEn ? 'Courses & Teacher Assignments' : 'የኮርሶች እና የአስተማሪዎች ምደባ',
       body: AsyncView(
         value: ref.watch(_regClassesProvider),
         onRetry: () => ref.invalidate(_regClassesProvider),
         data: (classes) {
+          final filteredClasses = _selectedClassId == null
+              ? classes
+              : classes.where((c) => asIntOr(c['id']) == _selectedClassId).toList();
+
           final rows = [
-            for (final c in classes)
+            for (final c in filteredClasses)
               for (final co in asJsonList(c['courses'])) (klass: c, course: co),
           ];
-          if (rows.isEmpty) return EmptyView(message: l.eduNoCourses, icon: Icons.menu_book_outlined);
-          return ListView(padding: const EdgeInsets.fromLTRB(16, 8, 16, 24), children: [
-            for (final r in rows)
-              TrackTile(
-                key: ValueKey('course-${r.course['id']}'),
-                title: '${r.course['name']}',
-                subtitle: [
-                  r.klass['name'],
-                  (asStr(r.course['teacher_name']) != null && asStr(r.course['teacher_name'])!.isNotEmpty)
-                      ? (isEn ? 'Teacher: ${r.course['teacher_name']}' : 'አስተማሪ፡ ${r.course['teacher_name']}')
-                      : (isEn ? 'No teacher assigned' : 'አስተማሪ አልተመደበም'),
-                ].join(' · '),
-                leading: const ListThumb(icon: Icons.person_add_alt_1_rounded, active: true),
-                trailing: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    if (canManage)
-                      IconButton(
-                        tooltip: isEn ? 'Assign Teachers' : 'አስተማሪ መመደብ',
-                        icon: const Icon(Icons.person_add_alt_1_outlined, color: AppColors.maroon),
-                        onPressed: () async {
-                          await showModalBottomSheet<void>(
-                            context: context,
-                            isScrollControlled: true,
-                            builder: (_) => EduCourseTeachersSheet(
-                              courseId: asIntOr(r.course['id']),
-                              courseName: '${r.course['name']}',
-                            ),
-                          );
-                          ref.invalidate(_regClassesProvider);
-                        },
+
+          return Column(
+            children: [
+              if (classes.length > 1)
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                  child: Row(
+                    children: [
+                      FilterChip(
+                        label: Text(isEn ? 'All Grades (1–12)' : 'ሁሉም ክፍሎች (1–12)'),
+                        selected: _selectedClassId == null,
+                        onSelected: (_) => setState(() => _selectedClassId = null),
+                        selectedColor: AppColors.maroon.withValues(alpha: 0.15),
+                        checkmarkColor: AppColors.maroon,
                       ),
-                    if (canManage)
-                      IconButton(
-                        tooltip: isEn ? 'Edit Class' : 'ክፍል አርትዕ',
-                        icon: const Icon(Icons.tune_rounded, size: 20),
-                        onPressed: () async {
-                          await context.push('/edu/manage/class/${r.klass['id']}');
-                          ref.invalidate(_regClassesProvider);
-                        },
-                      ),
-                  ],
-                ),
-                onTap: canManage
-                    ? () async {
-                        await showModalBottomSheet<void>(
-                          context: context,
-                          isScrollControlled: true,
-                          builder: (_) => EduCourseTeachersSheet(
-                            courseId: asIntOr(r.course['id']),
-                            courseName: '${r.course['name']}',
+                      const SizedBox(width: 8),
+                      for (final c in classes)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: FilterChip(
+                            label: Text('${c['name']}'),
+                            selected: _selectedClassId == asIntOr(c['id']),
+                            onSelected: (sel) => setState(() => _selectedClassId = sel ? asIntOr(c['id']) : null),
+                            selectedColor: AppColors.maroon.withValues(alpha: 0.15),
+                            checkmarkColor: AppColors.maroon,
                           ),
-                        );
-                        ref.invalidate(_regClassesProvider);
-                      }
-                    : null,
+                        ),
+                    ],
+                  ),
+                ),
+              Expanded(
+                child: rows.isEmpty
+                    ? EmptyView(message: l.eduNoCourses, icon: Icons.menu_book_outlined)
+                    : ListView(
+                        padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+                        children: [
+                          for (final r in rows)
+                            TrackTile(
+                              key: ValueKey('course-${r.course['id']}'),
+                              title: '${r.course['name']}',
+                              subtitle: [
+                                r.klass['name'],
+                                (asStr(r.course['teacher_name']) != null && asStr(r.course['teacher_name'])!.isNotEmpty)
+                                    ? (isEn ? 'Teacher: ${r.course['teacher_name']}' : 'አስተማሪ፡ ${r.course['teacher_name']}')
+                                    : (isEn ? 'No teacher assigned' : 'አስተማሪ አልተመደበም'),
+                              ].join(' · '),
+                              leading: const ListThumb(icon: Icons.menu_book_rounded, active: true),
+                              trailing: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  if (canManage)
+                                    IconButton(
+                                      tooltip: isEn ? 'Edit Course' : 'ኮርስ አርትዕ',
+                                      icon: const Icon(Icons.edit_note_rounded, color: AppColors.maroon, size: 22),
+                                      onPressed: () => _editCourse(r.course),
+                                    ),
+                                  if (canManage)
+                                    IconButton(
+                                      tooltip: isEn ? 'Assign Teachers' : 'አስተማሪ መመደብ',
+                                      icon: const Icon(Icons.person_add_alt_1_outlined, color: AppColors.goldDark, size: 20),
+                                      onPressed: () async {
+                                        await showModalBottomSheet<void>(
+                                          context: context,
+                                          isScrollControlled: true,
+                                          builder: (_) => EduCourseTeachersSheet(
+                                            courseId: asIntOr(r.course['id']),
+                                            courseName: '${r.course['name']}',
+                                          ),
+                                        );
+                                        ref.invalidate(_regClassesProvider);
+                                      },
+                                    ),
+                                  if (canManage)
+                                    IconButton(
+                                      tooltip: isEn ? 'Edit Class' : 'ክፍል አርትዕ',
+                                      icon: const Icon(Icons.tune_rounded, size: 20),
+                                      onPressed: () async {
+                                        await context.push('/edu/manage/class/${r.klass['id']}');
+                                        ref.invalidate(_regClassesProvider);
+                                      },
+                                    ),
+                                ],
+                              ),
+                              onTap: canManage ? () => _editCourse(r.course) : null,
+                            ),
+                        ],
+                      ),
               ),
-          ]);
+            ],
+          );
         },
       ),
     );

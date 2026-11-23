@@ -130,6 +130,32 @@ final class Notifications
         return self::createForUsers([$userId], $n);
     }
 
+    /**
+     * Broadcast a notification to all active members and administrators.
+     */
+    public static function sendToAll(array $n): int
+    {
+        try {
+            $query = DB::table('users');
+            if (class_exists(\App\Mz\Auth\MemberIds::class)) {
+                $query = \App\Mz\Auth\MemberIds::membersAndAdmins($query);
+            }
+            $userIds = $query->where('status', 'active')
+                ->whereNull('deleted_at')
+                ->pluck('id')
+                ->all();
+
+            if (empty($userIds)) {
+                return 0;
+            }
+
+            return self::createForUsers($userIds, $n);
+        } catch (\Throwable $e) {
+            Log::error('Notifications::sendToAll failed', ['error' => $e->getMessage()]);
+            return 0;
+        }
+    }
+
     /** Deliver pending pushes / emails after the response has been sent (never blocks the request). */
     public static function kick(): void
     {

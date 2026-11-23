@@ -25,6 +25,7 @@ GoRouter _buildRouter(String initialLocation) => GoRouter(
                 GoRoute(path: '/hub', builder: (_, _) => const Text('Hub Page')),
                 GoRoute(path: '/edu', builder: (_, _) => const Text('Edu Home Page')),
                 GoRoute(path: '/edu/learn', builder: (_, _) => const Text('Edu Learn Page')),
+                GoRoute(path: '/edu/classes', builder: (_, _) => const Text('Edu Classes Page')),
                 GoRoute(path: '/edu/library', builder: (_, _) => const Text('Edu Books Page')),
                 GoRoute(path: '/edu/progress', builder: (_, _) => const Text('Edu Progress Page')),
                 GoRoute(path: '/edu/more', builder: (_, _) => const Text('Edu More Page')),
@@ -83,26 +84,30 @@ void main() {
       expect(nav.showsBottomBar, isFalse);
     });
 
-    test('Education has bottom navigation bar with 4 destinations', () {
-      final navLearn = NavLayout(section: HomeSection.education, branch: 0, location: '/edu');
-      expect(navLearn.showsBottomBar, isTrue);
-      expect(navLearn.isEducation, isTrue);
-      expect(navLearn.selectedIndex, 0);
+    test('Education has bottom navigation bar with 5 destinations', () {
+      final navHome = NavLayout(section: HomeSection.education, branch: 0, location: '/edu');
+      expect(navHome.showsBottomBar, isTrue);
+      expect(navHome.isEducation, isTrue);
+      expect(navHome.selectedIndex, 0);
+
+      final navClasses = NavLayout(section: HomeSection.education, branch: 0, location: '/edu/classes');
+      expect(navClasses.selectedIndex, 1);
 
       final navBooks = NavLayout(section: HomeSection.education, branch: 0, location: '/edu/library');
-      expect(navBooks.selectedIndex, 1);
+      expect(navBooks.selectedIndex, 2);
 
       final navProgress = NavLayout(section: HomeSection.education, branch: 0, location: '/edu/progress');
-      expect(navProgress.selectedIndex, 2);
+      expect(navProgress.selectedIndex, 3);
 
       final navSettings = NavLayout(section: HomeSection.education, branch: 3, location: '/settings?from=edu');
-      expect(navSettings.selectedIndex, 3);
+      expect(navSettings.selectedIndex, 4);
 
       // Verify route mappings
-      expect(navLearn.routeFor(0), '/edu');
-      expect(navLearn.routeFor(1), '/edu/library');
-      expect(navLearn.routeFor(2), '/edu/progress');
-      expect(navLearn.routeFor(3), '/settings?from=edu');
+      expect(navHome.routeFor(0), '/edu');
+      expect(navHome.routeFor(1), '/edu/classes');
+      expect(navHome.routeFor(2), '/edu/library');
+      expect(navHome.routeFor(3), '/edu/progress');
+      expect(navHome.routeFor(4), '/settings?from=edu');
     });
 
     test('Mezmur has bottom navigation bar with 5 destinations', () {
@@ -141,17 +146,24 @@ void main() {
       expect(find.byType(NavigationBar), findsNothing);
     });
 
-    testWidgets('Education module renders Education bottom navigation bar with 4 tabs', (tester) async {
+    testWidgets('Education module renders Education bottom navigation bar with 5 tabs', (tester) async {
       final router = _buildRouter('/edu');
       await tester.pumpWidget(_buildApp(router));
       await tester.pumpAndSettle();
 
       expect(find.text('Edu Home Page'), findsOneWidget);
       expect(find.byType(NavigationBar), findsOneWidget);
-      expect(find.byKey(const ValueKey('edu-tab-learn')), findsOneWidget);
+      expect(find.byKey(const ValueKey('edu-tab-home')), findsOneWidget);
+      expect(find.byKey(const ValueKey('edu-tab-classes')), findsOneWidget);
       expect(find.byKey(const ValueKey('edu-tab-books')), findsOneWidget);
       expect(find.byKey(const ValueKey('edu-tab-progress')), findsOneWidget);
       expect(find.byKey(const ValueKey('edu-tab-settings')), findsOneWidget);
+
+      // Tap on Class tab and verify navigation and persistence
+      await tester.tap(find.byKey(const ValueKey('edu-tab-classes')));
+      await tester.pumpAndSettle();
+      expect(find.text('Edu Classes Page'), findsOneWidget);
+      expect(find.byType(NavigationBar), findsOneWidget);
 
       // Tap on Books tab and verify navigation and persistence
       await tester.tap(find.byKey(const ValueKey('edu-tab-books')));

@@ -27,6 +27,7 @@ class _RemindersManagementScreenState extends ConsumerState<RemindersManagementS
   int _tabIndex = 0; // 0: All, 1: Programs, 2: Education / Library, 3: Personal
   bool _notificationsOk = true;
   bool _exactAlarmsOk = true;
+  bool _fullScreenOk = true;
   bool _batteryOk = true;
 
   @override
@@ -39,16 +40,22 @@ class _RemindersManagementScreenState extends ConsumerState<RemindersManagementS
     try {
       final notifs = await ref.read(localNotificationsProvider).notificationsEnabled();
       bool exact = true;
+      bool fullScreen = true;
       bool battery = true;
       try {
         const channel = MethodChannel('mezmur/settings');
         exact = await channel.invokeMethod<bool>('canScheduleExactAlarms') ?? true;
         battery = await channel.invokeMethod<bool>('isIgnoringBatteryOptimizations') ?? true;
       } catch (_) {}
+      try {
+        const alarmChan = MethodChannel('mezmur/alarm');
+        fullScreen = await alarmChan.invokeMethod<bool>('canUseFullScreenIntent') ?? true;
+      } catch (_) {}
       if (mounted) {
         setState(() {
           _notificationsOk = notifs;
           _exactAlarmsOk = exact;
+          _fullScreenOk = fullScreen;
           _batteryOk = battery;
         });
       }
@@ -71,6 +78,29 @@ class _RemindersManagementScreenState extends ConsumerState<RemindersManagementS
     return PatternScaffold(
       appBar: AppBar(
         title: Text(isEn ? 'Reminders' : 'ማስታወሻዎች'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.alarm_on_rounded),
+            tooltip: isEn ? 'Test Real Alarm (3s)' : 'የእውነተኛ ማንቂያ ሙከራ (3 ሰከንድ)',
+            onPressed: () async {
+              try {
+                const channel = MethodChannel('mezmur/alarm');
+                await channel.invokeMethod('testAlarm', {'delaySeconds': 3});
+                if (context.mounted) {
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text(isEn
+                          ? 'Alarm scheduled in 3s! Lock phone or switch apps to test full screen alarm.'
+                          : 'ማንቂያው በ3 ሰከንድ ውስጥ ይጮኻል! ሙሉ ገጹን ለማየት ስልኩን ቆልፈው ይሞክሩ።'),
+                      backgroundColor: AppColors.maroon,
+                      duration: const Duration(seconds: 4),
+                    ),
+                  );
+                }
+              } catch (_) {}
+            },
+          ),
+        ],
       ),
       floatingActionButton: FloatingActionButton.extended(
         backgroundColor: AppColors.gold,
@@ -81,7 +111,7 @@ class _RemindersManagementScreenState extends ConsumerState<RemindersManagementS
       ),
       body: Column(
         children: [
-          if (!_notificationsOk || !_exactAlarmsOk || !_batteryOk)
+          if (!_notificationsOk || !_exactAlarmsOk || !_fullScreenOk || !_batteryOk)
             Container(
               margin: const EdgeInsets.fromLTRB(16, 12, 16, 4),
               padding: const EdgeInsets.all(12),
@@ -122,6 +152,15 @@ class _RemindersManagementScreenState extends ConsumerState<RemindersManagementS
                     ),
                     const SizedBox(height: 4),
                   ],
+                  if (!_fullScreenOk) ...[
+                    Text(
+                      isEn
+                          ? '• Full Screen Intent permission is needed to show full alarm screen on lockscreen.'
+                          : '• ስልኩ ሲቆለፍ ሙሉ ገጽ ማንቂያ ለማሳየት የሙሉ ገጽ ፈቃድ ያስፈልጋል።',
+                      style: context.sans(12, color: Colors.white70),
+                    ),
+                    const SizedBox(height: 4),
+                  ],
                   if (!_batteryOk) ...[
                     Text(
                       isEn
@@ -152,6 +191,16 @@ class _RemindersManagementScreenState extends ConsumerState<RemindersManagementS
                           label: Text(isEn ? 'Grant Exact Alarm' : 'የማንቂያ ፈቃድ'),
                           onPressed: () async {
                             const MethodChannel('mezmur/settings').invokeMethod('openExactAlarmSettings');
+                            await Future.delayed(const Duration(seconds: 1));
+                            _checkPermissions();
+                          },
+                        ),
+                      if (!_fullScreenOk)
+                        ActionChip(
+                          avatar: const Icon(Icons.fullscreen_rounded, size: 16),
+                          label: Text(isEn ? 'Full Screen Alarm' : 'የሙሉ ገጽ ፈቃድ'),
+                          onPressed: () async {
+                            const MethodChannel('mezmur/alarm').invokeMethod('openFullScreenIntentSettings');
                             await Future.delayed(const Duration(seconds: 1));
                             _checkPermissions();
                           },

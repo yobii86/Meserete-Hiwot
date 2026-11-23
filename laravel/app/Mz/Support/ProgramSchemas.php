@@ -40,6 +40,8 @@ final class ProgramSchemas
             'is_additional' => Z::boolean()->optional(),
             'counts_for_selection' => Z::boolean()->optional(),
             'monthly_rule' => Z::enum(['day_of_month', 'nth_weekday'])->nullable()->optional(),
+            'ordinal_weeks' => Z::any()->optional(),
+            'recurring_weekdays' => Z::any()->optional(),
             'recurrence_until' => self::isoDate()->nullable()->optional(),
             'member_groups' => V::memberGroups()->optional(),
             'is_mandatory_reminder' => Z::boolean()->optional(),
@@ -63,6 +65,8 @@ final class ProgramSchemas
             'ends_at' => V::dateTime()->nullable()->optional(),
             'recurrence' => Z::enum(['once', 'weekly', 'monthly', 'twice_monthly', 'ethiopian_days'])->optional(),
             'monthly_rule' => Z::enum(['day_of_month', 'nth_weekday'])->nullable()->optional(),
+            'ordinal_weeks' => Z::any()->optional(),
+            'recurring_weekdays' => Z::any()->optional(),
             'recurrence_until' => self::isoDate()->nullable()->optional(),
             'ethiopian_days' => Z::array(Z::number()->int()->min(1)->max(30))->min(1)->max(30)->nullable()->optional(),
             'location' => V::optionalText(255),
@@ -282,7 +286,7 @@ final class ProgramSchemas
     public static function occurrenceChange(): ZObject
     {
         return Z::object([
-            'action' => Z::enum(['cancelled', 'rescheduled', 'restore']),
+            'action' => Z::enum(['cancelled', 'rescheduled', 'suspended', 'restore', 'unsuspend']),
             'starts_at' => Z::coerceDate()->optional(),
             'ends_at' => Z::coerceDate()->optional(),
             'reason' => V::optionalText(500),

@@ -31,6 +31,15 @@ final class Ctx
         return request()->attributes->get('mz_auth');
     }
 
+    public static function bodyOrNull(): ?array
+    {
+        try {
+            return self::input();
+        } catch (\Throwable) {
+            return null;
+        }
+    }
+
     /** auditCtx(req): { auth, ip, userAgent }. */
     public static function actx(): array
     {

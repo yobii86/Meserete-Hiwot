@@ -12,9 +12,14 @@ Route::get('/health', function () {
     }
 });
 
-Route::get('/', function () {
-    if (file_exists(public_path('index.html'))) {
-        return response()->file(public_path('index.html'));
+$serveSpaHtml = function () {
+    $path = public_path('index.html');
+    if (file_exists($path)) {
+        return response()->file($path, [
+            'Cache-Control' => 'no-cache, no-store, must-revalidate',
+            'Pragma' => 'no-cache',
+            'Expires' => '0',
+        ]);
     }
     return response()->json([
         'name' => 'Mezmur Zemseretee Hiwot API',
@@ -23,9 +28,19 @@ Route::get('/', function () {
         'health' => '/health',
         'download' => '/download',
     ]);
-});
+};
+
+Route::get('/', $serveSpaHtml);
 
 // Public files, the download page and share links: routes/web/*.php.
 foreach (glob(__DIR__ . '/web/*.php') as $file) {
     require $file;
 }
+
+// SPA fallback for Flutter Web: return index.html for GET requests that are not API calls.
+Route::fallback(function (\Illuminate\Http\Request $request) use ($serveSpaHtml) {
+    if ($request->isMethod('GET') && ! $request->is('api/*') && file_exists(public_path('index.html'))) {
+        return $serveSpaHtml();
+    }
+    throw \App\Mz\Support\ApiError::notFound('ROUTE_NOT_FOUND', 'Route not found');
+});

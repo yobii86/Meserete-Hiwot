@@ -214,11 +214,42 @@ final class Payments
         foreach ($m['payments'] as $p) {
             foreach (Ethiopian::monthsBetween($p->period, $p->coverage_end ?? $p->period) as $mm) $covered[$mm] = true;
         }
+        $ethMonthNames = ['', 'መስከረም', 'ጥቅምት', 'ኅዳር', 'ታኅሣሥ', 'ጥር', 'የካቲት', 'መጋቢት', 'ሚያዝያ', 'ግንቦት', 'ሰኔ', 'ሐምሌ', 'ነሐሴ', 'ጳጉሜ'];
+        $ethMonthNamesEn = ['', 'Meskerem', 'Tikimt', 'Hidar', 'Tahsas', 'Tir', 'Yekatit', 'Megabit', 'Miyazya', 'Ginbot', 'Sene', 'Hamle', 'Nehase', 'Pagume'];
+
         $paid = [];
+        $unpaid = [];
+        $paidDetails = [];
+        $unpaidDetails = [];
+
         for ($i = 1; $i <= 12; $i++) {
-            if ($m['exempt'] || isset($covered[Ethiopian::period($year, $i)])) $paid[] = $i;
+            $period = Ethiopian::period($year, $i);
+            $isPaid = $m['exempt'] || isset($covered[$period]);
+            $item = [
+                'month' => $i,
+                'period' => $period,
+                'name' => $ethMonthNames[$i] ?? '',
+                'name_en' => $ethMonthNamesEn[$i] ?? '',
+            ];
+            if ($isPaid) {
+                $paid[] = $i;
+                $paidDetails[] = $item;
+            } else {
+                $unpaid[] = $i;
+                $unpaidDetails[] = $item;
+            }
         }
-        return ['year' => $year, 'months_total' => 12, 'months_paid' => count($paid), 'paid_months' => $paid, 'full' => count($paid) === 12, 'exempt' => $m['exempt']];
+        return [
+            'year' => $year,
+            'months_total' => 12,
+            'months_paid' => count($paid),
+            'paid_months' => $paid,
+            'unpaid_months' => $unpaid,
+            'paid_month_details' => $paidDetails,
+            'unpaid_month_details' => $unpaidDetails,
+            'full' => count($paid) === 12,
+            'exempt' => $m['exempt'],
+        ];
     }
 
     /** Share of months paid on time over [from, to] (late months earn lateCredit). Children: exempt. */
@@ -239,7 +270,7 @@ final class Payments
         $period = $f['period'] ?? Ethiopian::currentPeriod();
         $qb = DB::table('users as u')
             ->leftJoin('payments as p', fn ($j) => $j->on('p.user_id', '=', 'u.id')->where('p.period', '<=', $period)->where('p.coverage_end', '>=', $period))
-            ->whereIn('u.account_type', ['user', 'admin'])->whereNotExists(fn ($s) => $s->select(DB::raw(1))->from('roles as hr')->whereColumn('hr.id', 'u.role_id')->where('hr.is_hidden', true))
+            ->whereIn('u.account_type', ['user', 'admin'])
             ->where(['u.status' => 'active', 'u.membership_status' => 'active'])
             ->where('u.member_group', '<>', 'children')->whereNull('u.deleted_at')
             ->select('u.id as user_id', 'u.full_name', 'u.member_no', 'u.member_group', 'u.phone', 'u.member_type as user_member_type', 'p.*', 'u.id as uid')
@@ -277,6 +308,455 @@ final class Payments
         ];
     }
 
+    /**
+     * Financial summary for monthly contributions for the selected Ethiopian year and month.
+     */
+    public static function contributionSummary(array $f): array
+    {
+        $period = $f['period'] ?? Ethiopian::currentPeriod();
+        $pInfo = Ethiopian::parsePeriod($period);
+        $year = (int) ($f['year'] ?? $pInfo['year']);
+        $month = (int) ($f['month'] ?? $pInfo['month']);
+        if ($month < 1) $month = 1;
+        if ($month > 13) $month = 13;
+        $period = Ethiopian::period($year, $month);
+
+        $targetMonths = [];
+        for ($m = 1; $m <= $month; $m++) {
+            $targetMonths[] = Ethiopian::period($year, $m);
+        }
+
+        $qb = DB::table('users as u')
+            ->whereIn('u.account_type', ['user', 'admin'])
+            ->when(Schema::hasTable('roles'), fn ($q) => $q->whereNotExists(fn ($s) => $s->select(DB::raw(1))->from('roles as hr')->whereColumn('hr.id', 'u.role_id')->where('hr.is_hidden', true)))
+            ->where(['u.status' => 'active', 'u.membership_status' => 'active'])
+            ->where('u.member_group', '<>', 'children')
+            ->whereNull('u.deleted_at');
+
+        if (! empty($f['member_group'])) $qb->where('u.member_group', $f['member_group']);
+        if (! empty($f['member_type'])) $qb->where('u.member_type', $f['member_type']);
+
+        $totalRegistered = DB::table('users')->whereNull('deleted_at')->where('member_group', '<>', 'children')->count();
+        $users = $qb->get(['u.id', 'u.member_type']);
+        $expectedCount = count($users);
+        $userIds = $users->pluck('id')->all();
+
+        $rates = [
+            'student' => (float) (self::rateForPeriod('student', $period)['monthly_amount'] ?? 0),
+            'worker' => (float) (self::rateForPeriod('worker', $period)['monthly_amount'] ?? 0),
+        ];
+
+        $coveredByUser = [];
+        $amountPaidByUser = [];
+        if (! empty($userIds)) {
+            $payments = DB::table('payments')
+                ->whereIn('user_id', $userIds)
+                ->where('period', '<=', $period)
+                ->where('coverage_end', '>=', Ethiopian::period($year, 1))
+                ->get(['user_id', 'period', 'coverage_end', 'amount', 'monthly_rate', 'months']);
+
+            foreach ($payments as $p) {
+                $pMonths = Ethiopian::monthsBetween($p->period, $p->coverage_end ?? $p->period);
+                $rate = $p->monthly_rate ? (float) $p->monthly_rate : ((float) $p->amount / max(1, (int) $p->months));
+                foreach ($pMonths as $mStr) {
+                    if (in_array($mStr, $targetMonths, true) && ! isset($coveredByUser[$p->user_id][$mStr])) {
+                        $coveredByUser[$p->user_id][$mStr] = true;
+                        $amountPaidByUser[$p->user_id] = ($amountPaidByUser[$p->user_id] ?? 0) + $rate;
+                    }
+                }
+            }
+        }
+
+        $pendingReceipts = ! empty($userIds) ? DB::table('contribution_receipts')
+            ->whereIn('user_id', $userIds)
+            ->whereIn('status', ['submitted', 'pending', 'under_review'])
+            ->where('period', '<=', $period)
+            ->where('coverage_end', '>=', Ethiopian::period($year, 1))
+            ->pluck('user_id')
+            ->flip()
+            ->all() : [];
+
+        $paidUsers = 0;
+        $partialUsers = 0;
+        $unpaidUsers = 0;
+        $pendingUsers = 0;
+        $totalExpectedAmount = 0;
+        $totalCollectedAmount = 0;
+
+        foreach ($users as $u) {
+            $reqRate = $rates[$u->member_type] ?? 0;
+            $userExpected = $reqRate * count($targetMonths);
+            $totalExpectedAmount += $userExpected;
+
+            $paidMonthsCount = isset($coveredByUser[$u->id]) ? count($coveredByUser[$u->id]) : 0;
+            $amtPaid = $amountPaidByUser[$u->id] ?? 0;
+            $totalCollectedAmount += min($amtPaid, $userExpected);
+
+            if ($paidMonthsCount >= count($targetMonths)) {
+                $paidUsers++;
+            } elseif ($paidMonthsCount > 0) {
+                $partialUsers++;
+            } elseif (isset($pendingReceipts[$u->id])) {
+                $pendingUsers++;
+                $unpaidUsers++;
+            } else {
+                $unpaidUsers++;
+            }
+        }
+
+        $outstandingAmount = max(0, $totalExpectedAmount - $totalCollectedAmount);
+        $collectionPercent = $totalExpectedAmount > 0
+            ? round(($totalCollectedAmount / $totalExpectedAmount) * 100, 1)
+            : 0;
+
+        return [
+            'period' => $period,
+            'year' => $year,
+            'month' => $month,
+            'months_count' => count($targetMonths),
+            'total_registered_users' => $totalRegistered,
+            'total_expected_users' => $expectedCount,
+            'paid_users' => $paidUsers,
+            'partially_paid_users' => $partialUsers,
+            'unpaid_users' => $unpaidUsers,
+            'pending_users' => $pendingUsers,
+            'total_expected_amount' => Num::n($totalExpectedAmount),
+            'total_collected_amount' => Num::n($totalCollectedAmount),
+            'outstanding_amount' => Num::n($outstandingAmount),
+            'collection_percentage' => $collectionPercent,
+            'currency' => 'ETB',
+        ];
+    }
+
+    /**
+     * Year-wide month-by-month analytics summary for Ethiopian calendar (13 months).
+     */
+    public static function yearlyContributionSummary(array $f): array
+    {
+        $currentYear = (int) Ethiopian::parsePeriod(Ethiopian::currentPeriod())['year'];
+        $year = (int) ($f['year'] ?? $currentYear);
+        if ($year < 1900 || $year > 2200) {
+            $year = $currentYear;
+        }
+
+        $qb = DB::table('users as u')
+            ->whereIn('u.account_type', ['user', 'admin'])
+            ->when(Schema::hasTable('roles'), fn ($q) => $q->whereNotExists(fn ($s) => $s->select(DB::raw(1))->from('roles as hr')->whereColumn('hr.id', 'u.role_id')->where('hr.is_hidden', true)))
+            ->where(['u.status' => 'active', 'u.membership_status' => 'active'])
+            ->where('u.member_group', '<>', 'children')
+            ->whereNull('u.deleted_at');
+
+        if (! empty($f['member_group'])) $qb->where('u.member_group', $f['member_group']);
+        if (! empty($f['member_type'])) $qb->where('u.member_type', $f['member_type']);
+
+        $totalRegistered = DB::table('users')->whereNull('deleted_at')->where('member_group', '<>', 'children')->count();
+        $users = $qb->get(['u.id', 'u.member_type']);
+        $expectedCount = count($users);
+        $userIds = $users->pluck('id')->all();
+
+        $startPeriod = Ethiopian::period($year, 1);
+        $endPeriod = Ethiopian::period($year, 13);
+
+        $coveredByUser = [];
+        $amountPaidByUserMonth = [];
+
+        if (! empty($userIds)) {
+            $payments = DB::table('payments')
+                ->whereIn('user_id', $userIds)
+                ->where('period', '<=', $endPeriod)
+                ->where('coverage_end', '>=', $startPeriod)
+                ->get(['user_id', 'period', 'coverage_end', 'amount', 'monthly_rate', 'months']);
+
+            foreach ($payments as $p) {
+                $pMonths = Ethiopian::monthsBetween($p->period, $p->coverage_end ?? $p->period);
+                $rate = $p->monthly_rate ? (float) $p->monthly_rate : ((float) $p->amount / max(1, (int) $p->months));
+                foreach ($pMonths as $mStr) {
+                    $parts = explode('-', $mStr);
+                    if (count($parts) === 2 && (int) $parts[0] === $year) {
+                        $coveredByUser[$p->user_id][$mStr] = true;
+                        $amountPaidByUserMonth[$p->user_id][$mStr] = ($amountPaidByUserMonth[$p->user_id][$mStr] ?? 0) + $rate;
+                    }
+                }
+            }
+        }
+
+        $ethMonthNamesAm = [
+            1 => 'መስከረም', 2 => 'ጥቅምት', 3 => 'ሕዳር', 4 => 'ታኅሣሥ',
+            5 => 'ጥር', 6 => 'የካቲት', 7 => 'መጋቢት', 8 => 'ሚያዝያ',
+            9 => 'ግንቦት', 10 => 'ሰኔ', 11 => 'ሐምሌ', 12 => 'ነሐሴ', 13 => 'ጳጉሜን'
+        ];
+
+        $ethMonthNamesEn = [
+            1 => 'Meskerem', 2 => 'Tikimt', 3 => 'Hidar', 4 => 'Tahsas',
+            5 => 'Tir', 6 => 'Yakatit', 7 => 'Megabit', 8 => 'Miyazya',
+            9 => 'Ginbot', 10 => 'Sene', 11 => 'Hamle', 12 => 'Nehase', 13 => 'Puagme'
+        ];
+
+        $monthlyStats = [];
+        $grandExpected = 0;
+        $grandCollected = 0;
+
+        for ($m = 1; $m <= 13; $m++) {
+            $mPeriod = Ethiopian::period($year, $m);
+            $rates = [
+                'student' => (float) (self::rateForPeriod('student', $mPeriod)['monthly_amount'] ?? 0),
+                'worker' => (float) (self::rateForPeriod('worker', $mPeriod)['monthly_amount'] ?? 0),
+            ];
+
+            $mExpected = 0;
+            $mCollected = 0;
+            $mPaid = 0;
+            $mPartial = 0;
+            $mUnpaid = 0;
+
+            foreach ($users as $u) {
+                $reqRate = $rates[$u->member_type] ?? 0;
+                $mExpected += $reqRate;
+
+                $amt = $amountPaidByUserMonth[$u->id][$mPeriod] ?? 0;
+                $hasCover = isset($coveredByUser[$u->id][$mPeriod]);
+
+                if ($hasCover || $amt >= $reqRate) {
+                    $mPaid++;
+                    $mCollected += $reqRate;
+                } elseif ($amt > 0) {
+                    $mPartial++;
+                    $mCollected += $amt;
+                } else {
+                    $mUnpaid++;
+                }
+            }
+
+            $grandExpected += $mExpected;
+            $grandCollected += $mCollected;
+
+            $monthlyStats[] = [
+                'month' => $m,
+                'period' => $mPeriod,
+                'month_name_am' => $ethMonthNamesAm[$m] ?? "$m",
+                'month_name_en' => $ethMonthNamesEn[$m] ?? "$m",
+                'total_expected_users' => $expectedCount,
+                'paid_users' => $mPaid,
+                'partially_paid_users' => $mPartial,
+                'unpaid_users' => $mUnpaid,
+                'total_expected_amount' => Num::n($mExpected),
+                'total_collected_amount' => Num::n($mCollected),
+                'outstanding_amount' => Num::n(max(0, $mExpected - $mCollected)),
+                'collection_percentage' => $mExpected > 0 ? round(($mCollected / $mExpected) * 100, 1) : 0,
+            ];
+        }
+
+        return [
+            'year' => $year,
+            'total_registered_users' => $totalRegistered,
+            'total_expected_users' => $expectedCount,
+            'total_expected_amount' => Num::n($grandExpected),
+            'total_collected_amount' => Num::n($grandCollected),
+            'outstanding_amount' => Num::n(max(0, $grandExpected - $grandCollected)),
+            'collection_percentage' => $grandExpected > 0 ? round(($grandCollected / $grandExpected) * 100, 1) : 0,
+            'months' => $monthlyStats,
+            'currency' => 'ETB',
+        ];
+    }
+
+    /**
+     * Detailed user contribution list with month-based payment ordering and comprehensive filters.
+     */
+    public static function detailedContributions(array $f, array $page): array
+    {
+        $period = $f['period'] ?? Ethiopian::currentPeriod();
+        $pInfo = Ethiopian::parsePeriod($period);
+        $year = (int) ($f['year'] ?? $pInfo['year']);
+        $month = (int) ($f['month'] ?? $pInfo['month']);
+        if ($month < 1) $month = 1;
+        if ($month > 13) $month = 13;
+        $period = Ethiopian::period($year, $month);
+
+        $targetMonths = [];
+        for ($m = 1; $m <= $month; $m++) {
+            $targetMonths[] = Ethiopian::period($year, $m);
+        }
+
+        $qb = DB::table('users as u')
+            ->whereIn('u.account_type', ['user', 'admin'])
+            ->when(Schema::hasTable('roles'), fn ($q) => $q->whereNotExists(fn ($s) => $s->select(DB::raw(1))->from('roles as hr')->whereColumn('hr.id', 'u.role_id')->where('hr.is_hidden', true)))
+            ->where(['u.status' => 'active', 'u.membership_status' => 'active'])
+            ->where('u.member_group', '<>', 'children')
+            ->whereNull('u.deleted_at')
+            ->select('u.id', 'u.full_name', 'u.member_no', 'u.member_group', 'u.phone', 'u.member_type');
+
+        if (! empty($f['member_group'])) $qb->where('u.member_group', $f['member_group']);
+        if (! empty($f['member_type'])) $qb->where('u.member_type', $f['member_type']);
+        MemberIds::search($qb, $f['q'] ?? null);
+
+        $users = $qb->orderBy('u.full_name')->get();
+        $userIds = $users->pluck('id')->all();
+
+        $rates = [
+            'student' => (float) (self::rateForPeriod('student', $period)['monthly_amount'] ?? 0),
+            'worker' => (float) (self::rateForPeriod('worker', $period)['monthly_amount'] ?? 0),
+        ];
+
+        $coveredByUser = [];
+        $amountPaidByUser = [];
+        $latestPaymentByUser = [];
+        $allPaymentsByUser = [];
+        if (! empty($userIds)) {
+            $payments = DB::table('payments')
+                ->whereIn('user_id', $userIds)
+                ->orderBy('paid_on', 'desc')
+                ->get();
+
+            foreach ($payments as $p) {
+                $allPaymentsByUser[$p->user_id][] = self::serialize($p);
+                if (! isset($latestPaymentByUser[$p->user_id])) {
+                    $latestPaymentByUser[$p->user_id] = $p;
+                }
+                $pMonths = Ethiopian::monthsBetween($p->period, $p->coverage_end ?? $p->period);
+                $rate = $p->monthly_rate ? (float) $p->monthly_rate : ((float) $p->amount / max(1, (int) $p->months));
+                foreach ($pMonths as $mStr) {
+                    if (in_array($mStr, $targetMonths, true) && ! isset($coveredByUser[$p->user_id][$mStr])) {
+                        $coveredByUser[$p->user_id][$mStr] = true;
+                        $amountPaidByUser[$p->user_id] = ($amountPaidByUser[$p->user_id] ?? 0) + $rate;
+                    }
+                }
+            }
+        }
+
+        $pendingReceiptsByUser = [];
+        if (! empty($userIds)) {
+            $receipts = DB::table('contribution_receipts')
+                ->whereIn('user_id', $userIds)
+                ->whereIn('status', ['submitted', 'pending', 'under_review'])
+                ->orderBy('id', 'desc')
+                ->get();
+            foreach ($receipts as $r) {
+                if (! isset($pendingReceiptsByUser[$r->user_id])) {
+                    $pendingReceiptsByUser[$r->user_id] = [
+                        'id' => (int) $r->id,
+                        'period' => $r->period,
+                        'months' => (int) $r->months,
+                        'submitted_amount' => (float) ($r->submitted_amount ?? $r->expected_amount ?? 0),
+                        'method' => $r->method ?? 'bank',
+                        'reference' => $r->reference ?? null,
+                        'receipt_path' => $r->receipt_path ?? null,
+                        'status' => $r->status,
+                        'paid_on' => $r->paid_on ?? null,
+                    ];
+                }
+            }
+        }
+
+        $allRows = [];
+        $statusFilter = $f['status'] ?? null;
+        $paidMonthsFilter = isset($f['paid_months']) ? (int) $f['paid_months'] : null;
+        $unpaidMonthsFilter = isset($f['unpaid_months']) ? (int) $f['unpaid_months'] : null;
+
+        foreach ($users as $u) {
+            $reqRate = $rates[$u->member_type] ?? 0;
+            $userExpected = $reqRate * count($targetMonths);
+            $covered = $coveredByUser[$u->id] ?? [];
+            $paidCount = count($covered);
+            $unpaidCount = count($targetMonths) - $paidCount;
+            $amtPaid = $amountPaidByUser[$u->id] ?? 0;
+            $outstanding = max(0, $userExpected - $amtPaid);
+            $hasPending = isset($pendingReceiptsByUser[$u->id]);
+
+            if ($paidCount >= count($targetMonths)) {
+                $status = 'paid';
+                $priority = 1;
+            } elseif ($paidCount > 0) {
+                $status = 'partial';
+                $priority = 2;
+            } elseif ($hasPending) {
+                $status = 'pending';
+                $priority = 3;
+            } else {
+                $status = 'unpaid';
+                $priority = 4;
+            }
+
+            if ($statusFilter && $statusFilter !== 'all') {
+                if ($statusFilter === 'paid' && $status !== 'paid') continue;
+                if ($statusFilter === 'partial' && $status !== 'partial') continue;
+                if ($statusFilter === 'unpaid' && $status !== 'unpaid' && $status !== 'pending') continue;
+                if ($statusFilter === 'pending' && ! $hasPending && $status !== 'pending') continue;
+            }
+            if ($paidMonthsFilter !== null && $paidCount < $paidMonthsFilter) continue;
+            if ($unpaidMonthsFilter !== null && $unpaidCount < $unpaidMonthsFilter) continue;
+
+            $paidMonthNums = [];
+            $unpaidMonthNums = [];
+            for ($mi = 1; $mi <= $month; $mi++) {
+                $mP = Ethiopian::period($year, $mi);
+                if (isset($covered[$mP])) {
+                    $paidMonthNums[] = $mi;
+                } else {
+                    $unpaidMonthNums[] = $mi;
+                }
+            }
+
+            $latestPay = $latestPaymentByUser[$u->id] ?? null;
+
+            $allRows[] = [
+                'priority' => $priority,
+                'user_id' => $u->id,
+                'full_name' => $u->full_name,
+                'member_id' => MemberIds::format($u->member_no, $u->member_group),
+                'member_no' => $u->member_no,
+                'phone' => $u->phone,
+                'member_group' => $u->member_group,
+                'member_type' => $u->member_type,
+                'monthly_required' => Num::n($reqRate),
+                'months_in_scope' => count($targetMonths),
+                'months_paid' => $paidCount,
+                'months_unpaid' => $unpaidCount,
+                'paid_months_list' => $paidMonthNums,
+                'unpaid_months_list' => $unpaidMonthNums,
+                'total_expected' => Num::n($userExpected),
+                'total_paid' => Num::n($amtPaid),
+                'outstanding' => Num::n($outstanding),
+                'status' => $status,
+                'has_pending_receipt' => $hasPending,
+                'pending_receipt' => $pendingReceiptsByUser[$u->id] ?? null,
+                'latest_payment_date' => $latestPay ? Dates::toDateOnly($latestPay->paid_on) : null,
+                'latest_payment_method' => $latestPay->method ?? null,
+                'latest_reference' => $latestPay->reference ?? null,
+                'latest_receipt_path' => $latestPay->receipt_path ?? null,
+                'payment_history' => array_slice($allPaymentsByUser[$u->id] ?? [], 0, 10),
+            ];
+        }
+
+        usort($allRows, function ($a, $b) {
+            if ($a['priority'] !== $b['priority']) {
+                return $a['priority'] <=> $b['priority'];
+            }
+            if ($a['outstanding'] != $b['outstanding']) {
+                return $b['outstanding'] <=> $a['outstanding'];
+            }
+            return strcmp($a['full_name'], $b['full_name']);
+        });
+
+        $totalItems = count($allRows);
+        $perPage = max(1, (int) ($page['limit'] ?? 50));
+        $currentPage = max(1, (int) ($page['page'] ?? 1));
+        $offset = ($currentPage - 1) * $perPage;
+        $items = array_slice($allRows, $offset, $perPage);
+
+        return [
+            'items' => $items,
+            'meta' => [
+                'page' => $currentPage,
+                'limit' => $perPage,
+                'total' => $totalItems,
+                'pages' => (int) ceil($totalItems / $perPage),
+                'period' => $period,
+                'year' => $year,
+                'month' => $month,
+            ],
+        ];
+    }
+
     // ------------------------------------------------------------------ recording
     private static function assertNoOverlap(int $userId, string $start, string $end, ?int $exceptId = null): void
     {
@@ -304,6 +784,10 @@ final class Payments
             $months = $input['months'] ?? 1;
             $start = $input['period'];
             $end = Ethiopian::addMonths($start, $months - 1);
+            $periodList = Ethiopian::monthsBetween($start, $end);
+            if ($start === '2019-01' || in_array('2019-01', $periodList, true)) {
+                throw ApiError::badRequest('MESKEREM_2019_NOT_PAYABLE', 'Meskerem 2019 is not payable');
+            }
             self::assertNoOverlap($user->id, $start, $end);
             $rate = self::rateFor($user, $start);
             $row = [

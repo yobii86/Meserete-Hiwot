@@ -70,8 +70,29 @@ class _EduManageScreenState extends ConsumerState<EduManageScreen> {
     return PatternScaffold(
       appBar: AppBar(
         title: Text(l.courseManagement),
-        actions: const [
-          ContextualHelpButton(screenRoute: '/edu'),
+        actions: [
+          if (user.isSuperAdmin || user.can(Perm.educationManage))
+            IconButton(
+              tooltip: l.isEn ? 'Establish / Sync Grades 1–12' : 'ክፍል 1–12 ስርዓተ-ትምህርት አመሳስል',
+              icon: const Icon(Icons.sync_rounded),
+              onPressed: () async {
+                final confirm = await showConfirm(
+                  context,
+                  l.isEn
+                      ? 'Establish and connect all 12 grade classes to the official curriculum for the current academic year?'
+                      : 'ለሁሉም ከክፍል 1–12 ያሉ ክፍሎች ይፈጠሩ እና ከስርዓተ-ትምህርቱ ጋር ይገናኙ?',
+                );
+                if (!confirm || !context.mounted) return;
+                await runWithProgress(
+                  context,
+                  () => ref.read(eduRepositoryProvider).syncGradeClasses(),
+                  success: l.isEn ? 'Grades 1–12 classes synced with official curriculum' : 'ክፍል 1–12 ከስርዓተ-ትምህርቱ ጋር ተገናኝቷል',
+                );
+                ref.invalidate(_adminClassesProvider);
+                ref.invalidate(eduDashboardProvider);
+              },
+            ),
+          const ContextualHelpButton(screenRoute: '/edu'),
         ],
       ),
       floatingActionButton: (user.isSuperAdmin || user.can(Perm.educationManage))
@@ -369,6 +390,8 @@ class _EduClassEditorScreenState extends ConsumerState<EduClassEditorScreen> {
   List<Json> _academicYears = const [];
   List<Json> _terms = const [];
   List<Json> _levels = const [];
+  Json? _curriculumPreview;
+  bool _loadingCurriculum = false;
   Json? _class;
   List<Json> _staff = const [];
   bool _loading = false;
@@ -449,10 +472,25 @@ class _EduClassEditorScreenState extends ConsumerState<EduClassEditorScreen> {
           _allowSelfRegistration = c['allow_self_registration'] == true;
         }
       });
+      if (_levelId != null) {
+        _loadCurriculumPreview(_levelId!);
+      }
     } catch (e) {
       if (mounted) setState(() => _error = e);
     } finally {
       if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  Future<void> _loadCurriculumPreview(int levelId) async {
+    setState(() => _loadingCurriculum = true);
+    try {
+      final p = await ref.read(eduRepositoryProvider).previewCurriculum(levelId);
+      if (mounted) setState(() => _curriculumPreview = p);
+    } catch (_) {
+      if (mounted) setState(() => _curriculumPreview = null);
+    } finally {
+      if (mounted) setState(() => _loadingCurriculum = false);
     }
   }
 
@@ -489,45 +527,93 @@ class _EduClassEditorScreenState extends ConsumerState<EduClassEditorScreen> {
         _class = c;
         _error = null;
       });
+      ref.invalidate(_adminClassesProvider);
+      ref.invalidate(eduDashboardProvider);
       showSnack(context, l.saved);
     } catch (e) {
-      if (mounted) setState(() => _error = e);
+      if (mounted) {
+        setState(() => _error = e);
+        showSnack(context, errorText(l, e));
+      }
     } finally {
       if (mounted) setState(() => _saving = false);
     }
   }
 
-  Future<void> _editCourse([Json? course]) async {
+  Future<void> _editCourse(Json course) async {
     final l = context.l10n;
-    final name = TextEditingController(text: asStr(course?['name']) ?? '');
-    final code = TextEditingController(text: asStr(course?['code']) ?? '');
-    var status = asStr(course?['status']) ?? 'active';
-    var mode = asStr(course?['mode']) ?? 'physical';
-    var passMark = TextEditingController(text: course?['pass_mark'] != null ? '${course!['pass_mark']}' : '50');
-    final memberGroups = TextEditingController(text: asValues(course?['member_groups'], (e) => '$e').join(', '));
-    int? termId = asInt(course?['term_id']) ?? _termId;
-    int? teacherId = asInt(asJson(course?['teacher'])['id']);
-    String? teacherName = asStr(asJson(course?['teacher'])['full_name']);
-    // Course completion (separate from attendance): at 100 % no more sessions are expected.
-    var progress = asIntOr(course?['progress']).toDouble();
-    // The catalog subject (curriculum: units, lessons, materials) this class subject teaches.
-    int? subjectId = asInt(course?['subject_id']);
-    List<Json> catalog = const [];
-    try {
-      catalog = await ref.read(eduRepositoryProvider).subjects(all: true);
-    } catch (_) {
-      // Without the catalog the link simply cannot be changed here.
-    }
-    final linkedPrograms = asJsonList(course?['programs']);
+    final name = TextEditingController(text: asStr(course['name']) ?? '');
+    final code = TextEditingController(text: asStr(course['code']) ?? '');
+    var status = asStr(course['status']) ?? 'active';
+    var mode = asStr(course['mode']) ?? 'physical';
+    var passMark = TextEditingController(text: course['pass_mark'] != null ? '${course['pass_mark']}' : '50');
+    final memberGroups = TextEditingController(text: asValues(course['member_groups'], (e) => '$e').join(', '));
+    int? termId = asInt(course['term_id']) ?? _termId;
+    int? teacherId = asInt(asJson(course['teacher'])['id']);
+    String? teacherName = asStr(asJson(course['teacher'])['full_name']);
+    var progress = asIntOr(course['progress']).toDouble();
+    final subjectId = asInt(course['subject_id']);
+    final curr = asJson(course['curriculum_subject']);
+    final linkedPrograms = asJsonList(course['programs']);
     if (!mounted) return;
     final ok = await showDialog<bool>(
       context: context,
       builder: (ctx) => StatefulBuilder(
         builder: (ctx, setS) => AlertDialog(
           scrollable: true,
-          title: Text(course == null ? l.eduNewCourse : l.edit),
+          title: Text(l.isEn ? 'Course Offering Settings' : 'የኮርስ መረጃ ማስተካከያ'),
           content: Column(mainAxisSize: MainAxisSize.min, crossAxisAlignment: CrossAxisAlignment.start, children: [
-            TextField(controller: name, decoration: InputDecoration(labelText: l.title)),
+            if (curr.isNotEmpty || subjectId != null) ...[
+              Container(
+                padding: const EdgeInsets.all(10),
+                decoration: BoxDecoration(
+                  color: AppColors.maroon.withValues(alpha: 0.08),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: AppColors.maroon.withValues(alpha: 0.2)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        const Icon(Icons.menu_book_rounded, size: 18, color: AppColors.maroon),
+                        const SizedBox(width: 6),
+                        Expanded(
+                          child: Text(
+                            asStr(curr['name']) ?? asStr(course['name']) ?? '',
+                            style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                          ),
+                        ),
+                      ],
+                    ),
+                    if (asStr(curr['name_en']) != null)
+                      Padding(
+                        padding: const EdgeInsets.only(top: 2),
+                        child: Text(asStr(curr['name_en'])!, style: TextStyle(fontSize: 12, color: Theme.of(ctx).colorScheme.outline)),
+                      ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${curr['units_count'] ?? 0} ${l.isEn ? "units" : "ምዕራፎች"} · ${curr['lessons_count'] ?? 0} ${l.isEn ? "lessons" : "ትምህርቶች"}',
+                      style: const TextStyle(fontSize: 11),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      style: OutlinedButton.styleFrom(visualDensity: VisualDensity.compact),
+                      onPressed: () {
+                        Navigator.pop(ctx);
+                        if (subjectId != null) {
+                          context.push('/edu/learn/subject/$subjectId');
+                        }
+                      },
+                      icon: const Icon(Icons.open_in_new_rounded, size: 14),
+                      label: Text(l.isEn ? 'Open Curriculum Subject' : 'ስርዓተ-ትምህርቱን ተመልከት'),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 12),
+            ],
+            TextField(controller: name, decoration: InputDecoration(labelText: '${l.title} (${l.isEn ? "Display Name" : "የሚታየው ስም"})')),
             TextField(controller: code, decoration: InputDecoration(labelText: l.eaSubjectCode)),
             DropdownButtonFormField<String>(
               initialValue: status,
@@ -573,17 +659,6 @@ class _EduClassEditorScreenState extends ConsumerState<EduClassEditorScreen> {
                 helperMaxLines: 2,
               ),
             ),
-            if (catalog.isNotEmpty)
-              DropdownButtonFormField<int?>(
-                initialValue: catalog.any((s) => asInt(s['id']) == subjectId) ? subjectId : null,
-                isExpanded: true,
-                decoration: InputDecoration(labelText: l.elCatalogSubject, helperText: l.elCatalogSubjectHint, helperMaxLines: 3),
-                items: [
-                  DropdownMenuItem<int?>(value: null, child: Text(l.none)),
-                  for (final s in catalog) DropdownMenuItem<int?>(value: asInt(s['id']), child: Text('${s['name']}', overflow: TextOverflow.ellipsis)),
-                ],
-                onChanged: (v) => setS(() => subjectId = v),
-              ),
             const SizedBox(height: 10),
             ListTile(
               contentPadding: EdgeInsets.zero,
@@ -618,18 +693,15 @@ class _EduClassEditorScreenState extends ConsumerState<EduClassEditorScreen> {
                 ],
               ),
             ],
-            if (course != null) ...[
-              Align(alignment: Alignment.centerLeft, child: Text(l.eduCourseProgress(progress.round().toString()))),
-              Slider(value: progress, min: 0, max: 100, divisions: 20, label: '${progress.round()} %', onChanged: (v) => setS(() => progress = v)),
-              if (progress >= 100) Text(l.eduCourseCompletedHint, style: TextStyle(fontSize: 12, color: Theme.of(ctx).colorScheme.outline)),
-            ],
+            Align(alignment: Alignment.centerLeft, child: Text(l.eduCourseProgress(progress.round().toString()))),
+            Slider(value: progress, min: 0, max: 100, divisions: 20, label: '${progress.round()} %', onChanged: (v) => setS(() => progress = v)),
+            if (progress >= 100) Text(l.eduCourseCompletedHint, style: TextStyle(fontSize: 12, color: Theme.of(ctx).colorScheme.outline)),
           ]),
           actions: [
-            if (course != null)
-              TextButton(
-                onPressed: () => Navigator.pop(ctx, false),
-                child: Text(l.delete, style: const TextStyle(color: AppColors.danger)),
-              ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: Text(l.delete, style: const TextStyle(color: AppColors.danger)),
+            ),
             TextButton(onPressed: () => Navigator.pop(ctx), child: Text(l.cancel)),
             FilledButton(onPressed: () => Navigator.pop(ctx, true), child: Text(l.save)),
           ],
@@ -638,7 +710,7 @@ class _EduClassEditorScreenState extends ConsumerState<EduClassEditorScreen> {
     );
     if (ok == null || !mounted) return;
     final repo = ref.read(eduRepositoryProvider);
-    if (ok == false && course != null) {
+    if (ok == false) {
       if (!await showConfirm(context, l.deleteConfirm, destructive: true) || !mounted) return;
       await runWithProgress(context, () => repo.deleteCourse(asIntOr(course['id'])), success: l.deleted);
     } else if (name.text.trim().isNotEmpty) {
@@ -651,10 +723,10 @@ class _EduClassEditorScreenState extends ConsumerState<EduClassEditorScreen> {
         'pass_mark': double.tryParse(passMark.text.trim()) ?? 50.0,
         'member_groups': [for (final g in memberGroups.text.split(',')) if (g.trim().isNotEmpty) g.trim()],
         'teacher_user_id': teacherId,
-        if (catalog.isNotEmpty) 'subject_id': subjectId,
-        if (course != null) 'progress': progress.round(),
+        'subject_id': ?subjectId,
+        'progress': progress.round(),
       };
-      await runWithProgress(context, () => course == null ? repo.createCourse(_id!, body) : repo.updateCourse(asIntOr(course['id']), body), success: l.saved);
+      await runWithProgress(context, () => repo.updateCourse(asIntOr(course['id']), body), success: l.saved);
     }
     await _load();
   }
@@ -888,9 +960,75 @@ class _EduClassEditorScreenState extends ConsumerState<EduClassEditorScreen> {
                       for (final lv in _levels)
                         DropdownMenuItem<int?>(value: asInt(lv['id']), child: Text('${lv['name']}')),
                     ],
-                    onChanged: (v) => setState(() => _levelId = v),
+                    onChanged: (v) {
+                      setState(() => _levelId = v);
+                      if (v != null) {
+                        _loadCurriculumPreview(v);
+                      } else {
+                        setState(() => _curriculumPreview = null);
+                      }
+                    },
                   ),
                   const SizedBox(height: 10),
+                  if (_loadingCurriculum)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Center(child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))),
+                    )
+                  else if (_curriculumPreview != null) ...[
+                    Container(
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: AppColors.maroon.withValues(alpha: 0.05),
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: AppColors.gold.withValues(alpha: 0.4)),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              const Icon(Icons.verified_rounded, size: 18, color: AppColors.gold),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  l.isEn
+                                      ? 'Official Curriculum (${_curriculumPreview!['grade_label'] ?? ''}): ${_curriculumPreview!['subjects_count'] ?? 0} Subjects'
+                                      : 'ይፋዊ ስርዓተ-ትምህርት (${_curriculumPreview!['grade_label'] ?? ''})፡ ${_curriculumPreview!['subjects_count'] ?? 0} የትምህርት አይነቶች',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 6),
+                          Text(
+                            l.isEn
+                                ? 'These curriculum subjects will be automatically connected to this class. No duplicate course creation needed.'
+                                : 'እነዚህ የስርዓተ-ትምህርት አይነቶች በራስ-ሰር ከዚህ ክፍል ጋር ይገናኛሉ። ድጋሚ ኮርስ መፍጠር አያስፈልግም።',
+                            style: TextStyle(fontSize: 12, color: p.muted),
+                          ),
+                          const SizedBox(height: 8),
+                          Wrap(
+                            spacing: 6,
+                            runSpacing: 6,
+                            children: [
+                              for (final s in asJsonList(_curriculumPreview!['subjects']))
+                                Chip(
+                                  visualDensity: VisualDensity.compact,
+                                  backgroundColor: p.card,
+                                  avatar: const Icon(Icons.book_rounded, size: 14, color: AppColors.maroon),
+                                  label: Text(
+                                    '${s['name']}',
+                                    style: const TextStyle(fontSize: 11),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
                 ],
                 SwitchListTile(
                   contentPadding: EdgeInsets.zero,
@@ -944,34 +1082,174 @@ class _EduClassEditorScreenState extends ConsumerState<EduClassEditorScreen> {
                 ),
                 if (_id == null) Padding(padding: const EdgeInsets.only(top: 10), child: Text(l.eduSaveFirst, textAlign: TextAlign.center, style: context.sans(12, color: p.muted))),
                 if (_id != null) ...[
-                  // ---- courses & teachers
+                  // ---- curriculum-connected courses & teachers
                   Row(children: [
-                    Expanded(child: SectionHeader(title: l.eduCourses)),
-                    TextButton.icon(onPressed: () => _editCourse(), icon: const Icon(Icons.add_rounded), label: Text(l.eduNewCourse)),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          SectionHeader(title: l.eduCourses),
+                          if (_class?['curriculum'] != null)
+                            Text(
+                              l.isEn
+                                  ? '${_class!['curriculum']['grade_label'] ?? "Grade"} Curriculum · ${courses.length} Subjects Connected'
+                                  : '${_class!['curriculum']['grade_label'] ?? "ክፍል"} ስርዓተ-ትምህርት · ${courses.length} ትምህርቶች ተገናኝተዋል',
+                              style: TextStyle(fontSize: 11, color: AppColors.maroon, fontWeight: FontWeight.w600),
+                            ),
+                        ],
+                      ),
+                    ),
+                    TextButton.icon(
+                      onPressed: () async {
+                        final res = await runWithProgress(
+                          context,
+                          () => repo.syncClassCurriculum(_id!),
+                        );
+                        if (res != null && mounted && context.mounted) {
+                          final stats = res['sync_stats'] as Map<String, dynamic>?;
+                          final connected = stats?['connected'] ?? courses.length;
+                          final total = stats?['total_subjects'] ?? courses.length;
+                          final grade = stats?['grade'] ?? _class?['level']?['name'] ?? '';
+                          showDialog<void>(
+                            context: context,
+                            builder: (ctx) => AlertDialog(
+                              title: Row(
+                                children: [
+                                  const Icon(Icons.check_circle_outline, color: AppColors.goldLight),
+                                  const SizedBox(width: 8),
+                                  Text(l.isEn ? 'Curriculum Synced' : 'ስርዓተ-ትምህርት ተመሳስሏል'),
+                                ],
+                              ),
+                              content: Column(
+                                mainAxisSize: MainAxisSize.min,
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    l.isEn
+                                        ? 'Successfully synchronized class with official curriculum ($grade).'
+                                        : 'ክፍሉ ከይፋዊው ስርዓተ-ትምህርት ($grade) ጋር በተሳካ ሁኔታ ተመሳስሏል።',
+                                  ),
+                                  const SizedBox(height: 12),
+                                  Text('• ${l.isEn ? "Connected Subjects" : "የተገናኙ ትምህርቶች"}: $connected / $total'),
+                                  Text('• ${l.isEn ? "Student enrollments & records" : "የተማሪዎች ምዝገባ እና መረጃዎች"}: ${l.isEn ? "Preserved" : "ተጠብቀዋል"}'),
+                                ],
+                              ),
+                              actions: [
+                                FilledButton(
+                                  onPressed: () => Navigator.pop(ctx),
+                                  child: Text(l.ok),
+                                ),
+                              ],
+                            ),
+                          );
+                        }
+                        await _load();
+                      },
+                      icon: const Icon(Icons.sync_rounded, size: 16),
+                      label: Text(l.isEn ? 'Sync Curriculum' : 'ስርዓተ-ትምህርት አመሳስል'),
+                    ),
                   ]),
-                  if (courses.isEmpty) Text(l.eduNoCourses, style: context.sans(13, color: p.muted)),
+                  if (courses.isEmpty)
+                    Container(
+                      margin: const EdgeInsets.symmetric(vertical: 8),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: p.card,
+                        borderRadius: BorderRadius.circular(10),
+                        border: Border.all(color: p.border),
+                      ),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(l.eduNoCourses, style: context.sans(13, color: p.muted)),
+                          const SizedBox(height: 6),
+                          Text(
+                            l.isEn
+                                ? 'Courses for this class are automatically derived from the official curriculum for its grade. Click "Sync Curriculum" or verify the grade level.'
+                                : 'የዚህ ክፍል ኮርሶች በቀጥታ ከክፍሉ ይፋዊ ስርዓተ-ትምህርት የሚወሰዱ ናቸው። "ስርዓተ-ትምህርት አመሳስል" የሚለውን ይጫኑ ወይም የክፍሉን ደረጃ ያረጋግጡ።',
+                            style: TextStyle(fontSize: 11, color: p.muted),
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
+                            onPressed: () => context.push('/edu/content'),
+                            icon: const Icon(Icons.auto_stories_outlined, size: 16),
+                            label: Text(l.isEn ? 'Manage Curriculum' : 'ስርዓተ-ትምህርት አስተዳድር'),
+                          ),
+                        ],
+                      ),
+                    ),
                   for (final c in courses)
                     ListTile(
                       contentPadding: EdgeInsets.zero,
-                      leading: const Icon(Icons.menu_book_rounded, color: AppColors.gold),
-                      title: Text('${c['name']}'),
-                      subtitle: Text([
-                        asStr(c['code']),
-                        asStr(asJson(c['teacher'])['full_name']) ?? l.eduNoTeacher,
-                        if (c['status'] != null && c['status'] != 'active') c['status'] == 'archived' ? l.eaArchived : l.inactive,
-                      ].whereType<String>().join(' · ')),
-                      trailing: IconButton(
-                        tooltip: l.eaTeachers,
-                        icon: const Icon(Icons.groups_2_outlined),
-                        onPressed: () async {
-                          await showModalBottomSheet<void>(
-                            context: context,
-                            isScrollControlled: true,
-                            useRootNavigator: true,
-                            builder: (_) => EduCourseTeachersSheet(courseId: asIntOr(c['id']), courseName: '${c['name']}'),
-                          );
-                          await _load();
-                        },
+                      leading: Container(
+                        padding: const EdgeInsets.all(8),
+                        decoration: BoxDecoration(
+                          color: AppColors.maroon.withValues(alpha: 0.1),
+                          shape: BoxShape.circle,
+                        ),
+                        child: const Icon(Icons.menu_book_rounded, color: AppColors.maroon, size: 20),
+                      ),
+                      title: Text(
+                        '${c['name']}',
+                        style: const TextStyle(fontWeight: FontWeight.w600),
+                      ),
+                      subtitle: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            [
+                              if (asStr(c['code']) != null) asStr(c['code'])!,
+                              if (asJson(c['curriculum_subject'])['units_count'] != null)
+                                '${asJson(c['curriculum_subject'])['units_count']} ${l.isEn ? "units" : "ምዕራፎች"} · ${asJson(c['curriculum_subject'])['lessons_count'] ?? 0} ${l.isEn ? "lessons" : "ትምህርቶች"}',
+                            ].join(' · '),
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          const SizedBox(height: 2),
+                          Row(
+                            children: [
+                              Icon(Icons.person_outline_rounded, size: 13, color: p.muted),
+                              const SizedBox(width: 4),
+                              Expanded(
+                                child: Text(
+                                  asStr(asJson(c['teacher'])['full_name']) ?? l.eduNoTeacher,
+                                  style: TextStyle(fontSize: 11, color: asStr(asJson(c['teacher'])['full_name']) != null ? AppColors.maroon : p.muted),
+                                ),
+                              ),
+                              if (c['status'] != null && c['status'] != 'active')
+                                Container(
+                                  margin: const EdgeInsets.only(left: 6),
+                                  padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 1),
+                                  decoration: BoxDecoration(
+                                    color: p.border,
+                                    borderRadius: BorderRadius.circular(4),
+                                  ),
+                                  child: Text(
+                                    c['status'] == 'archived' ? l.eaArchived : l.inactive,
+                                    style: const TextStyle(fontSize: 10),
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ],
+                      ),
+                      trailing: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          IconButton(
+                            tooltip: l.eaTeachers,
+                            icon: const Icon(Icons.groups_2_outlined),
+                            onPressed: () async {
+                              await showModalBottomSheet<void>(
+                                context: context,
+                                isScrollControlled: true,
+                                useRootNavigator: true,
+                                builder: (_) => EduCourseTeachersSheet(courseId: asIntOr(c['id']), courseName: '${c['name']}'),
+                              );
+                              await _load();
+                            },
+                          ),
+                          const Icon(Icons.settings_outlined, size: 18),
+                        ],
                       ),
                       onTap: () => _editCourse(c),
                     ),

@@ -52,6 +52,12 @@ class ItemModel {
     this.maxDays,
     this.renewable = false,
     this.author,
+    this.subtitle,
+    this.publisher,
+    this.publicationYear,
+    this.language,
+    this.libraryCategoryId,
+    this.categoryType,
     this.kind = 'physical',
     this.hasFile = false,
     this.downloads = 0,
@@ -63,6 +69,12 @@ class ItemModel {
 
   /// Books: the author, printed (physical) or digital (a PDF), whether the PDF is uploaded.
   final String? author;
+  final String? subtitle;
+  final String? publisher;
+  final int? publicationYear;
+  final String? language;
+  final int? libraryCategoryId;
+  final String? categoryType;
   final String kind;
   final bool hasFile;
   final int downloads;
@@ -119,6 +131,12 @@ class ItemModel {
         maxDays: asInt(j['max_days']),
         renewable: asBool(j['renewable']),
         author: asStr(j['author']),
+        subtitle: asStr(j['subtitle']),
+        publisher: asStr(j['publisher']),
+        publicationYear: asInt(j['publication_year']),
+        language: asStr(j['language']),
+        libraryCategoryId: asInt(j['library_category_id'] ?? j['category_id']),
+        categoryType: asStr(j['category_type']),
         kind: asStr(j['kind']) ?? 'physical',
         hasFile: asBool(j['has_file']),
         downloads: asIntOr(j['downloads']),
@@ -267,6 +285,18 @@ abstract final class Perm {
   static const hrManage = 'hr.manage';
   static const paymentsManage = 'payments.manage';
   static const educationManage = 'education.manage';
+  static const educationView = 'education.view';
+  static const educationClasses = 'education.classes';
+  static const educationCurriculum = 'education.curriculum';
+  static const educationLessons = 'education.lessons';
+  static const educationMaterials = 'education.materials';
+  static const educationMaterialsApprove = 'education.materials_approve';
+  static const educationQuizzes = 'education.quizzes';
+  static const educationExams = 'education.exams';
+  static const educationAssessments = 'education.assessments';
+  static const educationMarks = 'education.marks';
+  static const educationAttendanceView = 'education.attendance_view';
+  static const educationSettings = 'education.settings';
   static const educationRegister = 'education.register';
   /// Categories, curriculum (subjects, units, lessons, materials) and the featured banner.
   static const educationContent = 'education.content';

@@ -28,14 +28,17 @@ final class EduSchemas
     {
         return Z::object([
             'name' => V::text(1, 150),
+            'name_en' => V::optionalText(150),
             'description' => V::optionalText(2000),
+            'description_en' => V::optionalText(2000),
             'term' => V::optionalText(80),
             'registration_opens_at' => V::dateTime()->nullable()->optional(),
             'registration_closes_at' => V::dateTime()->nullable()->optional(),
             'allow_regular' => Z::boolean()->optional(),
             'allow_distance' => Z::boolean()->optional(),
+            'allow_self_registration' => Z::boolean()->optional(),
             'capacity' => Z::number()->int()->min(1)->max(100000)->nullable()->optional(),
-            'status' => Z::enum(['active', 'archived'])->optional(),
+            'status' => Z::enum(['active', 'inactive', 'archived'])->optional(),
             // Academic period and organisation of the class (course offering).
             'academic_year' => V::optionalText(20),
             'semester' => V::optionalText(40),
@@ -103,7 +106,7 @@ final class EduSchemas
             'name_en' => V::optionalText(100),
             'kind' => Z::enum(['grade', 'extra'])->optional(),
             'sort_order' => Z::number()->int()->min(0)->max(1000)->optional(),
-            'is_active' => Z::boolean()->optional(),
+            'is_active' => V::bool()->optional(),
         ]);
     }
 
@@ -153,18 +156,31 @@ final class EduSchemas
     public static function assignment()
     {
         return Z::object([
-            'title' => V::text(1, 200),
+            'title' => V::text(1, 255),
+            'title_en' => V::optionalText(255),
             'instructions' => V::optionalText(20000),
+            'instructions_en' => V::optionalText(10000),
+            'course_id' => V::id()->nullable()->optional(),
+            'class_id' => V::id()->nullable()->optional(),
+            'subject_id' => V::id()->nullable()->optional(),
+            'grade' => Z::number()->int()->min(1)->max(12)->nullable()->optional(),
+            'max_score' => Z::number()->min(1)->max(1000)->optional(),
             'due_at' => V::dateTime()->nullable()->optional(),
             'publish_at' => V::dateTime()->nullable()->optional(),
             'late_policy' => Z::enum(['refuse', 'accept_marked'])->optional(),
             'late_until' => V::dateTime()->nullable()->optional(),
+            'allow_late' => Z::boolean()->optional(),
             'allow_resubmit' => Z::boolean()->optional(),
             'target_user_ids' => Z::array(V::id())->max(1000)->nullable()->optional(),
             'status' => Z::enum(['draft', 'published', 'archived'])->optional(),
-            'max_score' => self::score()->optional(),
             'is_group' => Z::boolean()->optional(),
+            'attachments' => Z::array(Z::any())->optional(),
         ]);
+    }
+
+    public static function courseAssignment()
+    {
+        return self::assignment();
     }
 
     // ---- learning catalog ----
@@ -346,7 +362,7 @@ final class EduSchemas
             'period_info' => V::optionalText(100),
             'description' => V::optionalText(2000),
             'cover_image' => V::optionalText(255),
-            'pdf_path' => V::text(1, 255),
+            'pdf_path' => V::optionalText(255),
             'pdf_mime' => V::optionalText(100),
             'pdf_size' => Z::number()->int()->min(0)->optional(),
             'status' => Z::enum(['draft', 'published', 'scheduled', 'archived'])->optional(),
@@ -374,25 +390,6 @@ final class EduSchemas
     }
 
     // ---- assignments & announcements (Features D & E) ----
-    public static function assignment()
-    {
-        return Z::object([
-            'title' => V::text(1, 255),
-            'title_en' => V::optionalText(255),
-            'instructions' => V::optionalText(10000),
-            'instructions_en' => V::optionalText(10000),
-            'course_id' => V::id()->nullable()->optional(),
-            'class_id' => V::id()->nullable()->optional(),
-            'subject_id' => V::id()->nullable()->optional(),
-            'grade' => Z::number()->int()->min(1)->max(12)->nullable()->optional(),
-            'max_score' => Z::number()->min(1)->max(1000)->optional(),
-            'due_at' => V::dateTime()->nullable()->optional(),
-            'status' => Z::enum(['draft', 'published', 'archived'])->optional(),
-            'allow_late' => Z::boolean()->optional(),
-            'allow_resubmit' => Z::boolean()->optional(),
-            'attachments' => Z::array(Z::any())->optional(),
-        ])->strict();
-    }
 
     public static function assignmentSubmission()
     {

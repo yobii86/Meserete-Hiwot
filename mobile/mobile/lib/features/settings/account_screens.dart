@@ -381,15 +381,116 @@ class MyAttendanceScreen extends ConsumerWidget {
               },
               emptyMessage: l.noAttendance,
               emptyIcon: Icons.how_to_reg_outlined,
-              itemBuilder: (context, a, _) => TrackTile(
-                title: a.programTitle,
-                subtitle: [f.date(a.startsAt), if (a.location != null) a.location!].join(' · '),
-                leading: ListThumb(icon: a.status == 'absent' ? Icons.event_busy_rounded : Icons.event_available_rounded),
-                trailing: Pill(attendanceLabel(context, a.status), color: attendanceColor(a.status)),
-                onTap: () => context.go('/programs/${a.programId}'),
-              ),
+              itemBuilder: (context, a, _) {
+                final dateText = a.calendarDate ?? f.date(a.startsAt);
+                final timeText = a.actualTime != null ? ' · ${a.actualTime}' : '';
+                final sigLabel = switch (a.signatureIndicator) {
+                  'signed' => l.isEn ? 'Signed' : 'ተፈርሟል',
+                  'missing' => l.isEn ? 'Signature Missing' : 'ያልተፈረመ',
+                  'exempt' => l.isEn ? 'Exempt' : 'ነፃ',
+                  _ => null,
+                };
+                final sigColor = switch (a.signatureIndicator) {
+                  'signed' => AppColors.success,
+                  'missing' => AppColors.danger,
+                  _ => AppColors.gold,
+                };
+                return TrackTile(
+                  title: a.programTitle,
+                  subtitle: '$dateText$timeText${a.location != null ? ' · ${a.location}' : ''}',
+                  leading: ListThumb(icon: a.status == 'absent' ? Icons.event_busy_rounded : Icons.event_available_rounded),
+                  trailing: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      if (sigLabel != null) ...[
+                        Pill(sigLabel, color: sigColor),
+                        const SizedBox(width: 6),
+                      ],
+                      Pill(attendanceLabel(context, a.status), color: attendanceColor(a.status)),
+                    ],
+                  ),
+                  onTap: () => _showAttendanceDetails(context, a, l),
+                );
+              },
             ),
           ),
+        ],
+      ),
+    );
+  }
+
+  void _showAttendanceDetails(BuildContext context, AttendanceRecord a, AppLocalizations l) {
+    showModalBottomSheet<void>(
+      context: context,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(16))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Text(
+                      a.programTitle,
+                      style: context.serif(18, weight: FontWeight.w700),
+                    ),
+                  ),
+                  Pill(attendanceLabel(context, a.status), color: attendanceColor(a.status)),
+                ],
+              ),
+              const SizedBox(height: 16),
+              if (a.calendarDate != null)
+                _infoRow(ctx, l.isEn ? 'Calendar Date' : 'የቀን መቁጠሪያ ቀን', a.calendarDate!),
+              if (a.attendedAt != null)
+                _infoRow(ctx, l.isEn ? 'Recorded At' : 'የተመዘገበበት ሰዓት', '${a.attendedAt}'),
+              if (a.actualTime != null)
+                _infoRow(ctx, l.isEn ? 'Actual Time' : 'ትክክለኛ ሰዓት', a.actualTime!),
+              if (a.memberName != null && a.memberName!.isNotEmpty)
+                _infoRow(ctx, l.isEn ? 'Member Name' : 'የአባል ስም', a.memberName!),
+              if (a.signatureIndicator != null)
+                _infoRow(
+                  ctx,
+                  l.isEn ? 'Signature' : 'ፊርማ',
+                  switch (a.signatureIndicator) {
+                    'signed' => l.isEn ? 'Signed' : 'ተፈርሟል',
+                    'missing' => l.isEn ? 'Signature Missing' : 'ያልተፈረመ',
+                    'exempt' => l.isEn ? 'Exempt' : 'ነፃ',
+                    _ => a.signatureIndicator!,
+                  },
+                ),
+              if (a.location != null && a.location!.isNotEmpty)
+                _infoRow(ctx, l.isEn ? 'Location' : 'ቦታ', a.location!),
+              const SizedBox(height: 16),
+              SizedBox(
+                width: double.infinity,
+                child: FilledButton.icon(
+                  icon: const Icon(Icons.arrow_forward_rounded, size: 18),
+                  label: Text(l.isEn ? 'View Program Details' : 'የፕሮግራሙን ዝርዝር ይመልከቱ'),
+                  onPressed: () {
+                    Navigator.pop(ctx);
+                    context.go('/programs/${a.programId}');
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _infoRow(BuildContext ctx, String label, String value) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: ctx.sans(13, color: ctx.palette.muted)),
+          Text(value, style: ctx.sans(13, weight: FontWeight.w600)),
         ],
       ),
     );

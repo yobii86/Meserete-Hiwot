@@ -150,8 +150,21 @@ class NarrationController extends Notifier<NarrationPlayerState> {
       duration: book.narrationDuration != null ? Duration(seconds: book.narrationDuration!) : null,
     );
 
+    final headers = <String, String>{};
     try {
-      final source = AudioSource.uri(Uri.parse(fullUrl), tag: mediaItem);
+      final store = ref.read(secureStoreProvider);
+      final cookie = store.imunifyCookie;
+      if (cookie != null && cookie.isNotEmpty) {
+        headers['Cookie'] = cookie;
+      }
+      final token = store.token;
+      if (token != null && token.isNotEmpty) {
+        headers['Authorization'] = 'Bearer $token';
+      }
+    } catch (_) {}
+
+    try {
+      final source = AudioSource.uri(Uri.parse(fullUrl), headers: headers.isEmpty ? null : headers, tag: mediaItem);
       await player.setAudioSource(source);
 
       final start = initialPosition ?? Duration(milliseconds: book.progress?.audioPositionMs ?? 0);
@@ -160,8 +173,25 @@ class NarrationController extends Notifier<NarrationPlayerState> {
       }
       await player.play();
     } catch (e) {
-      debugPrint('Narration player error: $e');
-      state = state.copyWith(hasError: true);
+      try {
+        await ref.read(apiClientProvider).ensureImunifyResolved();
+        final refreshedHeaders = Map<String, String>.from(headers);
+        final freshCookie = ref.read(secureStoreProvider).imunifyCookie;
+        if (freshCookie != null && freshCookie.isNotEmpty) {
+          refreshedHeaders['Cookie'] = freshCookie;
+        }
+        final source = AudioSource.uri(Uri.parse(fullUrl),
+            headers: refreshedHeaders.isEmpty ? null : refreshedHeaders, tag: mediaItem);
+        await player.setAudioSource(source);
+        final start = initialPosition ?? Duration(milliseconds: book.progress?.audioPositionMs ?? 0);
+        if (start > Duration.zero) {
+          await player.seek(start);
+        }
+        await player.play();
+      } catch (_) {
+        debugPrint('Narration player error: $e');
+        state = state.copyWith(hasError: true);
+      }
     }
   }
 

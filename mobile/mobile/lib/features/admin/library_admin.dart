@@ -1,6 +1,5 @@
 import 'dart:typed_data';
 
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -15,6 +14,7 @@ import '../../core/utils/validators.dart';
 import '../../models/activity.dart';
 import '../../models/admin.dart';
 import '../../models/json.dart';
+import '../../models/library.dart';
 import '../../repositories/providers.dart';
 import '../../services/sync_service.dart';
 import '../../widgets/brand.dart';
@@ -267,19 +267,287 @@ class _ItemCategoriesConfigSheetState extends ConsumerState<_ItemCategoriesConfi
   }
 }
 
-class _ItemEditor extends ConsumerStatefulWidget {
-  const _ItemEditor({this.existing});
-  final ItemModel? existing;
-  @override
-  ConsumerState<_ItemEditor> createState() => _ItemEditorState();
+final libraryCategoriesProvider = FutureProvider.autoDispose<List<LibraryCategory>>((ref) {
+  return ref.watch(libraryRepositoryProvider).categories(type: null, onlyActive: false);
+});
+
+Future<void> openLibraryCategoriesConfig(BuildContext context, WidgetRef ref) async {
+  await showModalBottomSheet<void>(
+    context: context,
+    isScrollControlled: true,
+    useRootNavigator: true,
+    builder: (ctx) => const _LibraryCategoriesConfigSheet(),
+  );
+  ref.invalidate(libraryCategoriesProvider);
 }
 
-class _ItemEditorState extends ConsumerState<_ItemEditor> {
+class _CategoryTypeBadge extends StatelessWidget {
+  const _CategoryTypeBadge({required this.type});
+  final String type;
+
+  @override
+  Widget build(BuildContext context) {
+    final isEn = Localizations.localeOf(context).languageCode == 'en';
+    final (label, color) = switch (type) {
+      'physical' => (isEn ? 'Physical' : 'ህትመት', Colors.brown),
+      'digital' => (isEn ? 'Digital' : 'ዲጂታል', Colors.blue),
+      _ => (isEn ? 'Both' : 'ሁለቱም', Colors.teal),
+    };
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withValues(alpha: 0.4)),
+      ),
+      child: Text(
+        label,
+        style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: color),
+      ),
+    );
+  }
+}
+
+class _LibraryCategoriesConfigSheet extends ConsumerStatefulWidget {
+  const _LibraryCategoriesConfigSheet();
+  @override
+  ConsumerState<_LibraryCategoriesConfigSheet> createState() => _LibraryCategoriesConfigSheetState();
+}
+
+class _LibraryCategoriesConfigSheetState extends ConsumerState<_LibraryCategoriesConfigSheet> {
+  String _filterType = 'all';
+
+  Future<void> _addOrEdit([LibraryCategory? cat]) async {
+    final l = context.l10n;
+    final isEn = Localizations.localeOf(context).languageCode == 'en';
+    final nameCtrl = TextEditingController(text: cat?.name ?? '');
+    final nameEnCtrl = TextEditingController(text: cat?.nameEn ?? '');
+    final codeCtrl = TextEditingController(text: cat?.code ?? '');
+    final descCtrl = TextEditingController(text: cat?.description ?? '');
+    String catType = cat?.categoryType ?? (_filterType == 'all' ? 'both' : _filterType);
+    bool isActive = cat?.isActive ?? true;
+    final isEdit = cat != null;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dCtx) => StatefulBuilder(
+        builder: (dCtx, setDialogState) => AlertDialog(
+          title: Text(isEdit ? (isEn ? 'Edit Category' : 'ምድብ ማስተካከል') : (isEn ? 'New Book Category' : 'አዲስ የመጽሐፍ ምድብ')),
+          content: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                TextField(
+                  controller: nameCtrl,
+                  decoration: InputDecoration(labelText: isEn ? 'Category Name (Amharic) *' : 'የምድቡ ስም (በአማርኛ) *'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: nameEnCtrl,
+                  decoration: InputDecoration(labelText: isEn ? 'Category Name (English)' : 'የምድቡ ስም (በእንግሊዝኛ)'),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: codeCtrl,
+                  decoration: InputDecoration(labelText: isEn ? 'Category Code (e.g. THEO)' : 'የምድቡ መለያ ኮድ (ምሳሌ፡ THEO)'),
+                ),
+                const SizedBox(height: 14),
+                Text(isEn ? 'Category Type' : 'የምድብ ዓይነት', style: dCtx.sans(12, color: dCtx.palette.muted, weight: FontWeight.w600)),
+                const SizedBox(height: 6),
+                SegmentedButton<String>(
+                  showSelectedIcon: false,
+                  segments: [
+                    ButtonSegment(value: 'physical', label: Text(l.libKindPhysical)),
+                    ButtonSegment(value: 'digital', label: Text(l.libKindDigital)),
+                    ButtonSegment(value: 'both', label: Text(isEn ? 'Both' : 'ሁለቱም')),
+                  ],
+                  selected: {catType},
+                  onSelectionChanged: (s) => setDialogState(() => catType = s.first),
+                ),
+                const SizedBox(height: 10),
+                TextField(
+                  controller: descCtrl,
+                  maxLines: 2,
+                  decoration: InputDecoration(labelText: isEn ? 'Description' : 'ማብራሪያ'),
+                ),
+                const SizedBox(height: 10),
+                SwitchListTile(
+                  contentPadding: EdgeInsets.zero,
+                  title: Text(isEn ? 'Active' : 'ገባሪ'),
+                  value: isActive,
+                  onChanged: (v) => setDialogState(() => isActive = v),
+                ),
+              ],
+            ),
+          ),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(dCtx, false), child: Text(l.cancel)),
+            FilledButton(
+              onPressed: () => Navigator.pop(dCtx, true),
+              child: Text(l.save),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (confirmed == true && nameCtrl.text.trim().isNotEmpty) {
+      final repo = ref.read(libraryRepositoryProvider);
+      final body = {
+        'name': nameCtrl.text.trim(),
+        if (nameEnCtrl.text.trim().isNotEmpty) 'name_en': nameEnCtrl.text.trim(),
+        if (codeCtrl.text.trim().isNotEmpty) 'code': codeCtrl.text.trim().toUpperCase(),
+        'category_type': catType,
+        if (descCtrl.text.trim().isNotEmpty) 'description': descCtrl.text.trim(),
+        'is_active': isActive,
+      };
+      try {
+        await repo.saveCategory(body, id: cat?.id);
+        ref.invalidate(libraryCategoriesProvider);
+        if (mounted) setState(() {});
+      } catch (e) {
+        if (mounted) showErrorSnack(context, e);
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final l = context.l10n;
+    final isEn = Localizations.localeOf(context).languageCode == 'en';
+    final catsAsync = ref.watch(libraryCategoriesProvider);
+
+    return SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.8),
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 8),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(isEn ? 'Book Categories (Physical / Digital)' : 'የመጻሕፍት ምድቦች (ህትመት / ዲጂታል)', style: context.serif(18)),
+                  IconButton(
+                    tooltip: isEn ? 'New Category' : 'አዲስ ምድብ',
+                    icon: const Icon(Icons.add_circle_outline),
+                    onPressed: () => _addOrEdit(),
+                  ),
+                ],
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: SegmentedButton<String>(
+                showSelectedIcon: false,
+                segments: [
+                  ButtonSegment(value: 'all', label: Text(l.all)),
+                  ButtonSegment(value: 'physical', label: Text(l.libKindPhysical)),
+                  ButtonSegment(value: 'digital', label: Text(l.libKindDigital)),
+                ],
+                selected: {_filterType},
+                onSelectionChanged: (s) => setState(() => _filterType = s.first),
+              ),
+            ),
+            const Divider(),
+            Expanded(
+              child: catsAsync.when(
+                loading: () => const LoadingView(),
+                error: (e, _) => ErrorView(error: e),
+                data: (allCats) {
+                  final cats = allCats.where((c) {
+                    if (_filterType == 'physical') return c.categoryType == 'physical' || c.categoryType == 'both';
+                    if (_filterType == 'digital') return c.categoryType == 'digital' || c.categoryType == 'both';
+                    return true;
+                  }).toList();
+                  if (cats.isEmpty) {
+                    return Center(child: Text(l.noResults));
+                  }
+                  return ListView.builder(
+                    itemCount: cats.length,
+                    itemBuilder: (ctx, i) {
+                      final c = cats[i];
+                      final name = isEn && c.nameEn != null ? c.nameEn! : c.name;
+                      final code = c.code != null ? '[${c.code}] ' : '';
+                      return ListTile(
+                        leading: CircleAvatar(
+                          backgroundColor: c.categoryType == 'digital'
+                              ? Colors.blue.withValues(alpha: 0.15)
+                              : (c.categoryType == 'physical' ? Colors.amber.withValues(alpha: 0.2) : Colors.green.withValues(alpha: 0.15)),
+                          child: Icon(
+                            c.categoryType == 'digital'
+                                ? Icons.picture_as_pdf_outlined
+                                : (c.categoryType == 'physical' ? Icons.menu_book_outlined : Icons.auto_stories_outlined),
+                            size: 20,
+                            color: c.categoryType == 'digital'
+                                ? Colors.blue.shade700
+                                : (c.categoryType == 'physical' ? Colors.brown.shade700 : Colors.teal.shade700),
+                          ),
+                        ),
+                        title: Row(
+                          children: [
+                            Expanded(child: Text('$code$name')),
+                            _CategoryTypeBadge(type: c.categoryType),
+                          ],
+                        ),
+                        subtitle: Text(
+                          [
+                            if (c.description != null && c.description!.isNotEmpty) c.description!,
+                            if (!c.isActive) (isEn ? 'Inactive' : 'ቦዝኗል'),
+                          ].join(' · '),
+                        ),
+                        trailing: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: const Icon(Icons.edit_outlined),
+                              onPressed: () => _addOrEdit(c),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.delete_outline, color: AppColors.danger),
+                              onPressed: () async {
+                                final ok = await showConfirm(context, l.deleteConfirm, destructive: true);
+                                if (!mounted || !ok) return;
+                                try {
+                                  await ref.read(libraryRepositoryProvider).deleteCategory(c.id);
+                                  ref.invalidate(libraryCategoriesProvider);
+                                  if (mounted) setState(() {});
+                                } catch (e) {
+                                  if (!mounted) return;
+                                  showErrorSnack(this.context, e);
+                                }
+                              },
+                            ),
+                          ],
+                        ),
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class ItemEditorSheet extends ConsumerStatefulWidget {
+  const ItemEditorSheet({super.key, this.existing});
+  final ItemModel? existing;
+  @override
+  ConsumerState<ItemEditorSheet> createState() => _ItemEditorSheetState();
+}
+
+typedef _ItemEditor = ItemEditorSheet;
+
+class _ItemEditorSheetState extends ConsumerState<ItemEditorSheet> {
   final _form = GlobalKey<FormState>();
   late ItemModel? _item = widget.existing;
   late final _name = TextEditingController(text: _item?.name);
-  late final _author = TextEditingController(text: _item?.author);
-  late String _kind = _item?.kind ?? 'physical';
   late final _code = TextEditingController(text: _item?.code);
   late String? _category = _item?.category;
   String? _suggestedCode;
@@ -289,7 +557,7 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
   late final _location = TextEditingController(text: _item?.location);
   late final _notes = TextEditingController(text: _item?.notes);
   late String _status = _item?.status ?? 'active';
-  late String _domain = _item?.domain ?? 'mezmur';
+  late final String _domain = _item?.domain ?? 'mezmur';
   late int? _department = _item?.departmentId;
   late bool _direct = _item?.directBorrowable ?? false;
   late bool _renewable = _item?.renewable ?? false;
@@ -297,20 +565,18 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
   late final _maxDays = TextEditingController(text: _item?.maxDays?.toString());
   Object? _error;
 
-  bool _isHymnsDepartment(int? deptId, List<Json> depts) {
-    if (deptId == null) return false;
-    final d = depts.firstWhere((x) => asIntOr(x['id']) == deptId, orElse: () => {});
-    final nameEn = (d['name_en'] ?? '').toString().toLowerCase();
-    final name = (d['name'] ?? '').toString();
-    return deptId == 1 || nameEn.contains('hymn') || name.contains('ዝማሬ');
-  }
-
-  bool _isEducationDepartment(int? deptId, List<Json> depts) {
-    if (deptId == null) return false;
-    final d = depts.firstWhere((x) => asIntOr(x['id']) == deptId, orElse: () => {});
-    final nameEn = (d['name_en'] ?? '').toString().toLowerCase();
-    final name = (d['name'] ?? '').toString();
-    return deptId == 2 || nameEn.contains('education') || name.contains('ትምህርት');
+  @override
+  void dispose() {
+    _name.dispose();
+    _code.dispose();
+    _desc.dispose();
+    _qty.dispose();
+    _condition.dispose();
+    _location.dispose();
+    _notes.dispose();
+    _maxQty.dispose();
+    _maxDays.dispose();
+    super.dispose();
   }
 
   @override
@@ -321,11 +587,15 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
     }
   }
 
-  /// The code a new item would get (department + category); shown as the code field's hint.
+  /// The code a new item would get (CATEGORY-ITEMNAME-SEQUENCE); shown as the code field's hint.
   Future<void> _suggestCode() async {
     if (_item != null) return;
     try {
-      final c = await ref.read(adminRepositoryProvider).nextItemCode(departmentId: _department, category: _category);
+      final c = await ref.read(adminRepositoryProvider).nextItemCode(
+        departmentId: _department,
+        category: _category,
+        name: _name.text.trim().isNotEmpty ? _name.text.trim() : null,
+      );
       if (mounted) setState(() => _suggestedCode = c);
     } catch (_) {}
   }
@@ -335,15 +605,12 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
     String? opt(TextEditingController c) => c.text.trim().isEmpty ? null : c.text.trim();
     final body = {
       'name': _name.text.trim(),
-      'author': opt(_author),
-      'kind': _kind,
-      // Empty: the server gives the next department-based code (e.g. FIN-EQ-0004).
+      'kind': 'physical',
       if (_code.text.trim().isNotEmpty || _item == null) 'code': _code.text.trim(),
-      'category': _category,
+      'category': _category ?? 'equipment',
       'domain': _domain,
       'description': opt(_desc),
-      // A digital book has no copies to lend.
-      'quantity': _kind == 'digital' ? 0 : int.parse(_qty.text.trim()),
+      'quantity': int.parse(_qty.text.trim()),
       'condition': opt(_condition),
       'location': opt(_location),
       'notes': opt(_notes),
@@ -371,8 +638,14 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
   @override
   Widget build(BuildContext context) {
     final l = context.l10n;
+    final isEn = Localizations.localeOf(context).languageCode == 'en';
     final v = Validators(l);
     final repo = ref.read(adminRepositoryProvider);
+
+    // Filter out 'books' from generic item categories
+    final rawCats = ref.watch(_itemCategoriesProvider).value ?? const <Json>[];
+    final itemCats = rawCats.where((c) => c['key'] != 'books').toList();
+
     return SafeArea(
       child: Form(
         key: _form,
@@ -382,18 +655,20 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
             children: [
               Text(_item == null ? l.newItem : l.editItem, style: context.serif(19)),
               IconButton(
-                tooltip: Localizations.localeOf(context).languageCode == 'am' ? 'የእቃዎች ምድብ ቅንብር' : 'Configuration',
+                tooltip: isEn ? 'Item Categories' : 'የእቃዎች ምድብ ቅንብር',
                 icon: const Icon(Icons.tune_rounded),
                 onPressed: () => _openItemCategoriesConfig(context, ref),
               ),
             ],
           ),
           const SizedBox(height: 14),
-          TextFormField(controller: _name, validator: (s) => v.text(s, max: 200), decoration: InputDecoration(labelText: l.itemName)),
+          TextFormField(
+            controller: _name,
+            validator: (s) => v.text(s, max: 200),
+            decoration: InputDecoration(labelText: l.itemName),
+            onChanged: (_) => _suggestCode(),
+          ),
           const SizedBox(height: 12),
-          // Books: printed (lent with a signature) or digital (a PDF members download).
-          // Property of every kind: books, equipment, electronics, furniture, instruments, office
-          // materials, department resources… (configurable categories).
           DropdownButtonFormField<String?>(
             key: const ValueKey('item-category'),
             isExpanded: true,
@@ -401,9 +676,15 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
             decoration: InputDecoration(labelText: l.itemCategory),
             items: [
               DropdownMenuItem<String?>(value: null, child: Text(l.none)),
-              for (final c in ref.watch(_itemCategoriesProvider).value ?? const <Json>[])
-                DropdownMenuItem<String?>(value: '${c['key']}', child: Text(Localizations.localeOf(context).languageCode == 'en' && c['name_en'] != null ? '${c['name_en']}' : '${c['name']}', overflow: TextOverflow.ellipsis)),
-              if (_category != null && !(ref.watch(_itemCategoriesProvider).value ?? const <Json>[]).any((c) => c['key'] == _category))
+              for (final c in itemCats)
+                DropdownMenuItem<String?>(
+                  value: '${c['key']}',
+                  child: Text(
+                    Localizations.localeOf(context).languageCode == 'en' && c['name_en'] != null ? '${c['name_en']}' : '${c['name']}',
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              if (_category != null && _category != 'books' && !itemCats.any((c) => c['key'] == _category))
                 DropdownMenuItem<String?>(value: _category, child: Text(_category!)),
             ],
             onChanged: (x) {
@@ -412,49 +693,28 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
             },
           ),
           const SizedBox(height: 12),
-          // Books only: printed (lent with a signature) or digital (a PDF members download), and the author.
-          if (_category == null || _category == 'books' || _kind == 'digital') ...[
-            Text(l.libBookKind, style: context.sans(12, color: context.palette.muted, weight: FontWeight.w600)),
-            const SizedBox(height: 6),
-            SegmentedButton<String>(
-              key: const ValueKey('item-kind'),
-              showSelectedIcon: false,
-              segments: [
-                ButtonSegment(value: 'physical', icon: const Icon(Icons.menu_book_rounded), label: Text(l.libKindPhysical)),
-                ButtonSegment(value: 'digital', icon: const Icon(Icons.picture_as_pdf_rounded), label: Text(l.libKindDigital)),
-              ],
-              selected: {_kind},
-              onSelectionChanged: (x) => setState(() => _kind = x.first),
-            ),
-            const SizedBox(height: 12),
-            TextFormField(controller: _author, validator: (s) => v.text(s, max: 200, optional: true), decoration: InputDecoration(labelText: l.libAuthor)),
-            const SizedBox(height: 12),
-          ],
           TextFormField(
             controller: _code,
             validator: (s) => RegExp(r'^[A-Za-z0-9_./-]{0,60}$').hasMatch(s?.trim() ?? '') && (_item == null || (s?.trim() ?? '').isNotEmpty) ? null : l.vInvalidValue,
             decoration: InputDecoration(
               labelText: l.itemCode,
-              hintText: _suggestedCode,
-              helperText: _item == null ? l.itemCodeAuto : null,
+              hintText: _suggestedCode ?? 'FURN-DESK-001',
+              helperText: _item == null ? '${l.itemCodeAuto} (e.g. FURN-DESK-001)' : null,
               errorText: serverFieldError(l, _error, 'code'),
             ),
           ),
-
-          if (_kind == 'physical') ...[
-            TextFormField(
-              controller: _qty,
-              keyboardType: TextInputType.number,
-              validator: (s) => v.intRange(s, max: 100000),
-              decoration: InputDecoration(labelText: l.quantity, errorText: serverFieldError(l, _error, 'quantity')),
-            ),
-            const SizedBox(height: 12),
-          ],
+          const SizedBox(height: 12),
+          TextFormField(
+            controller: _qty,
+            keyboardType: TextInputType.number,
+            validator: (s) => v.intRange(s, min: 0, max: 100000),
+            decoration: InputDecoration(labelText: l.quantity, errorText: serverFieldError(l, _error, 'quantity')),
+          ),
+          const SizedBox(height: 12),
           TextFormField(controller: _condition, validator: (s) => v.text(s, max: 100, optional: true), decoration: InputDecoration(labelText: l.condition)),
           const SizedBox(height: 12),
           TextFormField(controller: _location, validator: (s) => v.text(s, max: 200, optional: true), decoration: InputDecoration(labelText: l.storageLocation)),
           const SizedBox(height: 12),
-          // Owning / responsible department (the Finance and Property Department sees every department's items).
           DropdownButtonFormField<int?>(
             isExpanded: true,
             initialValue: _department,
@@ -465,42 +725,11 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
                 DropdownMenuItem<int?>(value: asIntOr(d['id']), child: Text(departmentName(context, d), overflow: TextOverflow.ellipsis)),
             ],
             onChanged: (x) {
-              setState(() {
-                _department = x;
-                final depts = ref.read(_itemDepartmentsProvider).value ?? const <Json>[];
-                if (_isHymnsDepartment(x, depts)) {
-                  _domain = 'mezmur';
-                } else if (_isEducationDepartment(x, depts)) {
-                  _domain = 'timhirt';
-                }
-              });
+              setState(() => _department = x);
               _suggestCode();
             },
           ),
-          Builder(builder: (context) {
-            final depts = ref.watch(_itemDepartmentsProvider).value ?? const <Json>[];
-            final isHymns = _isHymnsDepartment(_department, depts);
-            final isEdu = _isEducationDepartment(_department, depts);
-            if (isHymns || isEdu) return const SizedBox.shrink();
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                const SizedBox(height: 12),
-                Text(Localizations.localeOf(context).languageCode == 'am' ? 'የእቃው ክፍል / ሞጁል (Module / Library)' : 'Module / Library', style: context.sans(12, color: context.palette.muted, weight: FontWeight.w600)),
-                const SizedBox(height: 6),
-                SegmentedButton<String>(
-                  key: const ValueKey('item-domain'),
-                  showSelectedIcon: false,
-                  segments: [
-                    ButtonSegment(value: 'mezmur', icon: const Icon(Icons.music_note_rounded), label: Text(l.hubMezmur)),
-                    ButtonSegment(value: 'timhirt', icon: const Icon(Icons.school_rounded), label: Text(l.hubEducation)),
-                  ],
-                  selected: {_domain},
-                  onSelectionChanged: (x) => setState(() => _domain = x.first),
-                ),
-              ],
-            );
-          }),
+          const SizedBox(height: 12),
           SwitchListTile(contentPadding: EdgeInsets.zero, title: Text(l.itemDirectBorrowable), subtitle: Text(l.itemDirectBorrowableHint), value: _direct, onChanged: (x) => setState(() => _direct = x)),
           if (_direct) ...[
             Row(children: [
@@ -552,23 +781,6 @@ class _ItemEditorState extends ConsumerState<_ItemEditor> {
               setState(() => _item = it);
             },
           ),
-          if (_kind == 'digital')
-            ListTile(
-              key: const ValueKey('item-pdf'),
-              contentPadding: EdgeInsets.zero,
-              leading: Icon(Icons.picture_as_pdf_rounded, color: _item?.hasFile ?? false ? AppColors.success : AppColors.danger),
-              title: Text(_item?.hasFile ?? false ? l.libPdfUploaded : l.libUploadPdf),
-              subtitle: _item == null ? Text(l.libSaveFirst) : (_item!.hasFile ? Text(l.libDownloads('${_item!.downloads}')) : null),
-              trailing: const Icon(Icons.upload_file_rounded),
-              enabled: _item != null,
-              onTap: () async {
-                final res = await FilePicker.pickFiles(type: FileType.custom, allowedExtensions: const ['pdf']);
-                final path = res.isEmpty ? null : res.first.path;
-                if (path == null || !context.mounted) return;
-                final it = await runWithProgress(context, () => ref.read(libraryRepositoryProvider).uploadBookPdf(_item!.id, path), success: l.libPdfUploaded);
-                if (it != null) setState(() => _item = it);
-              },
-            ),
           TextButton(onPressed: () => Navigator.pop(context, true), child: Text(l.close)),
         ]),
       ),
@@ -593,6 +805,7 @@ class _BorrowingsAdminScreenState extends ConsumerState<BorrowingsAdminScreen> {
   String? _domain;
   int? _deptId;
   String? _catKey;
+  bool _groupByBook = false;
 
   @override
   Widget build(BuildContext context) {
@@ -619,6 +832,24 @@ class _BorrowingsAdminScreenState extends ConsumerState<BorrowingsAdminScreen> {
       ),
       body: Column(children: [
         Padding(padding: const EdgeInsets.fromLTRB(16, 8, 16, 6), child: SearchBox(onChanged: (v) => setState(() => _q = v))),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
+          child: Row(
+            children: [
+              ChoiceChip(
+                label: Text(l.isEn ? 'All Loans' : 'ሁሉንም ውሰታዎች'),
+                selected: !_groupByBook,
+                onSelected: (v) => setState(() => _groupByBook = false),
+              ),
+              const SizedBox(width: 8),
+              ChoiceChip(
+                label: Text(l.isEn ? 'Grouped by Book' : 'በመጽሐፍ የተመደቡ'),
+                selected: _groupByBook,
+                onSelected: (v) => setState(() => _groupByBook = true),
+              ),
+            ],
+          ),
+        ),
         SingleChildScrollView(
           scrollDirection: Axis.horizontal,
           padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -669,29 +900,136 @@ class _BorrowingsAdminScreenState extends ConsumerState<BorrowingsAdminScreen> {
           ]),
         ),
         Expanded(
-          child: PagedListView<Borrowing>(
-            key: ValueKey(filter.toString()),
-            controller: _ctrl,
-            fetch: (page) => ref.read(adminRepositoryProvider).borrowings(filter: filter, page: page),
-            emptyMessage: l.noBorrowings,
-            emptyIcon: Icons.inventory_2_outlined,
-            itemBuilder: (context, b, _) {
-              final d = deadlineInfo(context, b);
-              return TrackTile(
-                title: '${b.userName ?? ''} — ${b.item.name} × ${b.quantity}',
-                subtitle: [
-                  '${l.dueOn}: ${f.shortDate(Formatters.parseDateOnly(b.dueOn))}',
-                  if (b.fineAmount > 0) f.money(b.fineAmount, b.fineCurrency),
-                  if (!b.signed) l.notSigned,
-                ].join(' · '),
-                leading: ListThumb(icon: Icons.inventory_2_outlined, imageUrl: b.item.imageUrl),
-                trailing: Pill(d.text, color: d.color),
-                onTap: () => context.push('/admin/borrowings/${b.id}').then((_) => _ctrl.refresh()),
-              );
-            },
-          ),
+          child: _groupByBook
+              ? _GroupedBorrowingsView(filter: filter, f: f, l: l, onRefresh: () => _ctrl.refresh())
+              : PagedListView<Borrowing>(
+                  key: ValueKey(filter.toString()),
+                  controller: _ctrl,
+                  fetch: (page) => ref.read(adminRepositoryProvider).borrowings(filter: filter, page: page),
+                  emptyMessage: l.noBorrowings,
+                  emptyIcon: Icons.inventory_2_outlined,
+                  itemBuilder: (context, b, _) {
+                    final d = deadlineInfo(context, b);
+                    return TrackTile(
+                      title: '${b.userName ?? ''} — ${b.item.name} × ${b.quantity}',
+                      subtitle: [
+                        '${l.dueOn}: ${f.shortDate(Formatters.parseDateOnly(b.dueOn))}',
+                        if (b.fineAmount > 0) f.money(b.fineAmount, b.fineCurrency),
+                        if (!b.signed) l.notSigned,
+                      ].join(' · '),
+                      leading: ListThumb(icon: Icons.inventory_2_outlined, imageUrl: b.item.imageUrl),
+                      trailing: Pill(d.text, color: d.color),
+                      onTap: () => context.push('/admin/borrowings/${b.id}').then((_) => _ctrl.refresh()),
+                    );
+                  },
+                ),
         ),
       ]),
+    );
+  }
+}
+
+class _GroupedBorrowingsView extends ConsumerStatefulWidget {
+  const _GroupedBorrowingsView({required this.filter, required this.f, required this.l, required this.onRefresh});
+  final Map<String, dynamic> filter;
+  final Formatters f;
+  final AppLocalizations l;
+  final VoidCallback onRefresh;
+
+  @override
+  ConsumerState<_GroupedBorrowingsView> createState() => _GroupedBorrowingsViewState();
+}
+
+class _GroupedBorrowingsViewState extends ConsumerState<_GroupedBorrowingsView> {
+  bool _loading = false;
+  List<Borrowing> _all = [];
+
+  @override
+  void initState() {
+    super.initState();
+    _load();
+  }
+
+  @override
+  void didUpdateWidget(covariant _GroupedBorrowingsView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.filter.toString() != widget.filter.toString()) {
+      _load();
+    }
+  }
+
+  Future<void> _load() async {
+    setState(() => _loading = true);
+    try {
+      final res = await ref.read(adminRepositoryProvider).borrowings(filter: {...widget.filter, 'per_page': 200});
+      if (mounted) setState(() => _all = res.items);
+    } catch (_) {
+    } finally {
+      if (mounted) setState(() => _loading = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_loading) return const Center(child: CircularProgressIndicator());
+    if (_all.isEmpty) {
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: EmptyView(icon: Icons.inventory_2_outlined, message: widget.l.noBorrowings),
+        ),
+      );
+    }
+
+    final groups = <int, List<Borrowing>>{};
+    for (final b in _all) {
+      groups.putIfAbsent(b.item.id, () => []).add(b);
+    }
+
+    final sortedItems = groups.keys.toList()
+      ..sort((a, b) => groups[b]!.length.compareTo(groups[a]!.length));
+
+    return RefreshIndicator(
+      onRefresh: () async {
+        await _load();
+        widget.onRefresh();
+      },
+      child: ListView.builder(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
+        itemCount: sortedItems.length,
+        itemBuilder: (context, i) {
+          final itemId = sortedItems[i];
+          final loans = groups[itemId]!;
+          final item = loans.first.item;
+          final totalCopies = loans.fold<int>(0, (sum, b) => sum + b.quantity);
+
+          return Card(
+            margin: const EdgeInsets.only(bottom: 12),
+            elevation: 0.5,
+            shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+            child: ExpansionTile(
+              leading: ListThumb(icon: Icons.menu_book_rounded, imageUrl: item.imageUrl),
+              title: Text(item.name, style: context.sans(15, weight: FontWeight.w700)),
+              subtitle: Text(
+                '${item.code} · ${widget.l.isEn ? '$totalCopies copies out on loan' : '$totalCopies ቅጂዎች ተውሰዋል'} (${loans.length} ${widget.l.isEn ? 'borrowers' : 'ተጠቃሚዎች'})',
+                style: context.sans(12, color: context.palette.muted),
+              ),
+              children: [
+                const Divider(height: 1),
+                for (final b in loans) ...[
+                  ListTile(
+                    dense: true,
+                    title: Text('${b.userName ?? ''} × ${b.quantity}', style: context.sans(14, weight: FontWeight.w600)),
+                    subtitle: Text('${widget.l.dueOn}: ${widget.f.shortDate(Formatters.parseDateOnly(b.dueOn))}', style: context.sans(12)),
+                    trailing: const Icon(Icons.chevron_right_rounded, size: 20),
+                    onTap: () => context.push('/admin/borrowings/${b.id}').then((_) => _load()),
+                  ),
+                ],
+              ],
+            ),
+          );
+        },
+      ),
     );
   }
 }
@@ -781,9 +1119,18 @@ class _IssueBorrowingScreenState extends ConsumerState<IssueBorrowingScreen> {
             },
           ),
           SettingsTile(
+            icon: Icons.menu_book_rounded,
+            label: l.isEn ? 'Book (Library)' : 'መጽሐፍ (ከቤተ-መጻሕፍት)',
+            value: _item != null && _item!.domain == 'library' ? '${_item!.name}\n${l.availableOf(_item!.available, _item!.quantity)}' : (l.isEn ? 'Select Book' : 'መጽሐፍ ይምረጡ'),
+            onTap: () async {
+              final it = await pickBook(context);
+              if (it != null) setState(() => _item = it);
+            },
+          ),
+          SettingsTile(
             icon: Icons.inventory_2_outlined,
-            label: l.item,
-            value: _item == null ? l.selectItem : '${_item!.name}\n${l.availableOf(_item!.available, _item!.quantity)}',
+            label: l.isEn ? 'Generic Item (Inventory)' : 'አጠቃላይ ንብረት / ዕቃ',
+            value: _item != null && _item!.domain != 'library' ? '${_item!.name}\n${l.availableOf(_item!.available, _item!.quantity)}' : (l.isEn ? 'Select Generic Item' : 'አጠቃላይ ዕቃ ይምረጡ'),
             onTap: () async {
               final it = await pickItem(context);
               if (it != null) setState(() => _item = it);

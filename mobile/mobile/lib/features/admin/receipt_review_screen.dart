@@ -15,7 +15,8 @@ import 'admin_widgets.dart';
 
 /// Admin screen for authorized financial officers to review member contribution receipts.
 class ReceiptReviewAdminScreen extends ConsumerStatefulWidget {
-  const ReceiptReviewAdminScreen({super.key});
+  const ReceiptReviewAdminScreen({super.key, this.initialReceiptId});
+  final int? initialReceiptId;
 
   @override
   ConsumerState<ReceiptReviewAdminScreen> createState() => _ReceiptReviewAdminScreenState();
@@ -25,6 +26,16 @@ class _ReceiptReviewAdminScreenState extends ConsumerState<ReceiptReviewAdminScr
   final _ctrl = PagedListController<Json>();
   String? _status = 'submitted';
   String _q = '';
+  int? _initialId;
+
+  @override
+  void initState() {
+    super.initState();
+    _initialId = widget.initialReceiptId;
+    if (_initialId != null) {
+      _status = null; // Show all statuses so targeted receipt is never filtered out
+    }
+  }
 
   Future<void> _reviewReceipt(Json row, String decision) async {
     final l = context.l10n;
@@ -152,7 +163,10 @@ class _ReceiptReviewAdminScreenState extends ConsumerState<ReceiptReviewAdminScr
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
             child: SearchBox(onChanged: (v) {
-              setState(() => _q = v);
+              setState(() {
+                _q = v;
+                _initialId = null;
+              });
               _ctrl.refresh();
             }),
           ),
@@ -165,7 +179,10 @@ class _ReceiptReviewAdminScreenState extends ConsumerState<ReceiptReviewAdminScr
                   label: Text(l.isEn ? 'All' : 'ሁሉም'),
                   selected: _status == null,
                   onSelected: (_) {
-                    setState(() => _status = null);
+                    setState(() {
+                      _status = null;
+                      _initialId = null;
+                    });
                     _ctrl.refresh();
                   },
                 ),
@@ -174,7 +191,10 @@ class _ReceiptReviewAdminScreenState extends ConsumerState<ReceiptReviewAdminScr
                   label: Text(l.isEn ? 'Submitted' : 'የገቡ'),
                   selected: _status == 'submitted',
                   onSelected: (_) {
-                    setState(() => _status = 'submitted');
+                    setState(() {
+                      _status = 'submitted';
+                      _initialId = null;
+                    });
                     _ctrl.refresh();
                   },
                 ),
@@ -183,7 +203,10 @@ class _ReceiptReviewAdminScreenState extends ConsumerState<ReceiptReviewAdminScr
                   label: Text(l.isEn ? 'Approved' : 'የጸደቁ'),
                   selected: _status == 'approved',
                   onSelected: (_) {
-                    setState(() => _status = 'approved');
+                    setState(() {
+                      _status = 'approved';
+                      _initialId = null;
+                    });
                     _ctrl.refresh();
                   },
                 ),
@@ -192,7 +215,10 @@ class _ReceiptReviewAdminScreenState extends ConsumerState<ReceiptReviewAdminScr
                   label: Text(l.isEn ? 'Rejected' : 'ውድቅ የተደረጉ'),
                   selected: _status == 'rejected',
                   onSelected: (_) {
-                    setState(() => _status = 'rejected');
+                    setState(() {
+                      _status = 'rejected';
+                      _initialId = null;
+                    });
                     _ctrl.refresh();
                   },
                 ),
@@ -204,6 +230,7 @@ class _ReceiptReviewAdminScreenState extends ConsumerState<ReceiptReviewAdminScr
             child: PagedListView<Json>(
               controller: _ctrl,
               fetch: (page) => repo.adminContributionReceipts(
+                id: _initialId,
                 status: _status,
                 q: _q.isEmpty ? null : _q,
                 page: page,

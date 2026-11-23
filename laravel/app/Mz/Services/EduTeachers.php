@@ -36,12 +36,18 @@ final class EduTeachers
             ->orderByRaw("FIELD(t.status, 'active', 'suspended', 'removed')")->orderByDesc('t.assigned_at')->get()->all();
     }
 
-    /** The subjects the signed-in member teaches (active assignments), with their class. */
+    /** The subjects the signed-in member teaches (active assignments), with their class. Moderators see all active courses. */
     public static function teaching(AuthContext $auth): array
     {
-        return DB::table('edu_course_teachers as t')->join('edu_courses as co', 'co.id', '=', 't.course_id')->join('edu_classes as c', 'c.id', '=', 'co.class_id')
-            ->where(['t.user_id' => $auth->id, 't.status' => 'active'])
-            ->select('co.id', 'co.name', 'co.code', 'co.status', 'c.id as class_id', 'c.name as class_name', 'c.academic_year', 'c.semester',
+        $q = DB::table('edu_courses as co')->join('edu_classes as c', 'c.id', '=', 'co.class_id');
+
+        // If not a moderator/admin, restrict strictly to active teacher assignments
+        if (! Edu::isModerator($auth)) {
+            $q->join('edu_course_teachers as t', 'co.id', '=', 't.course_id')
+              ->where(['t.user_id' => $auth->id, 't.status' => 'active']);
+        }
+
+        return $q->select('co.id', 'co.name', 'co.code', 'co.status', 'c.id as class_id', 'c.name as class_name', 'c.academic_year', 'c.semester',
                 DB::raw("(SELECT COUNT(*) FROM edu_assessments a JOIN edu_scores s ON s.assessment_id = a.id WHERE a.course_id = co.id AND s.status = 'rejected') as rejected_marks"),
                 DB::raw("(SELECT COUNT(*) FROM edu_assessments a JOIN edu_scores s ON s.assessment_id = a.id WHERE a.course_id = co.id AND s.status = 'submitted') as submitted_marks"))
             ->orderBy('c.name')->orderBy('co.name')->get()->all();

@@ -5,6 +5,7 @@ namespace App\Mz\Jobs;
 use App\Mz\Db\Locks;
 use App\Mz\Notifications\Notifications;
 use App\Mz\Notifications\Telegram;
+use App\Mz\Services\AttendanceSessions;
 use App\Mz\Services\Borrowings;
 use App\Mz\Services\Choir;
 use App\Mz\Services\Settings;
@@ -32,6 +33,7 @@ final class Jobs
     public static function all(): array
     {
         return [
+            'attendance:auto-close' => [60, fn () => ['closed_sessions' => AttendanceSessions::closeExpiredSessions()]],
             'notifications:dispatch' => [60, fn () => Notifications::dispatchPending()],
             // Time-based notifications stored in advance (task deadlines…): one central dispatcher.
             'scheduled:dispatch' => [60, function () {

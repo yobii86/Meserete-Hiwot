@@ -50,6 +50,7 @@ class DbResponseCache implements ResponseCache {
   static bool isProtectedPath(String path) => _protectedPrefixes.any(path.startsWith);
 
   static String requiredPermissionFor(String path) {
+    if (path.startsWith('/edu/admin/attendance')) return Perm.educationAttendanceView;
     if (path.startsWith('/edu/admin')) return Perm.educationManage;
     if (path.startsWith('/admin/selections') || path.startsWith('/selections')) return Perm.selectionView;
     if (path.startsWith('/admin/reports') || path.startsWith('/reports')) return Perm.reportsView;

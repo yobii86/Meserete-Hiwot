@@ -80,7 +80,9 @@ Route::prefix('mezmurs')->group(function () use ($pageOf) {
     })->middleware(['mz', 'mz:all,mezmurs.view']);
     Route::get('admin/{id}', fn () => Http::ok(Mezmurs::detail(Ctx::id(), Ctx::auth(), true, false)))->middleware(['mz', 'mz:all,mezmurs.view']);
 
-    Route::get('{id}', fn () => Http::ok(Mezmurs::detail(Ctx::id(), Ctx::authOrNull())))->middleware('mz:optional');
+    Route::get('{id}/stream.mp3', fn () => Mezmurs::streamAudio(Ctx::id()))->where('id', '[0-9]+')->middleware('mz:optional');
+    Route::get('{id}/stream', fn () => Mezmurs::streamAudio(Ctx::id()))->where('id', '[0-9]+')->middleware('mz:optional');
+    Route::get('{id}', fn () => Http::ok(Mezmurs::detail(Ctx::id(), Ctx::authOrNull())))->where('id', '[0-9]+')->middleware('mz:optional');
 
     Route::post('/', fn () => Http::created(Mezmurs::create(Ctx::actx(), Ctx::body(CS::mezmurCreate()))))->middleware(['mz', 'mz:all,mezmurs.create']);
     Route::patch('{id}', function () {

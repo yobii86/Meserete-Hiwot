@@ -17,24 +17,30 @@ use Illuminate\Support\Facades\DB;
  */
 final class Items
 {
-    private const FIELDS = ['name', 'author', 'kind', 'code', 'category', 'description', 'condition', 'status', 'location', 'notes', 'domain', 'department_id', 'direct_borrowable', 'max_quantity', 'max_days', 'renewable'];
+    private const FIELDS = ['name', 'author', 'kind', 'code', 'category', 'description', 'condition', 'status', 'location', 'notes', 'domain', 'department_id', 'direct_borrowable', 'max_quantity', 'max_days', 'renewable', 'library_category_id', 'subtitle', 'publisher', 'publication_year', 'language'];
 
     public static function serialize(object $i): array
     {
         return [
             'id' => $i->id,
             'name' => $i->name,
+            'subtitle' => $i->subtitle ?? null,
             'author' => $i->author ?? null,
+            'publisher' => $i->publisher ?? null,
+            'publication_year' => $i->publication_year !== null ? (int) $i->publication_year : null,
+            'language' => $i->language ?? 'am',
             // physical book / item, or digital book (PDF)
             'kind' => $i->kind ?? 'physical',
             'code' => $i->code,
             'has_file' => ! empty($i->file_path),
             'file_size' => isset($i->file_size) ? (int) $i->file_size : null,
-            'file_url' => ! empty($i->file_path) ? "/library/books/{$i->id}/file" : null,
+            'file_url' => ! empty($i->file_path) ? url("/api/v1/library/books/{$i->id}/file") : null,
+            'stream_url' => ! empty($i->file_path) ? url("/api/v1/library/books/{$i->id}/file") : null,
             'downloads' => (int) ($i->downloads ?? 0),
             'category' => $i->category,
             'category_name' => $i->category_name ?? $i->category,
             'category_name_en' => $i->category_name_en ?? null,
+            'library_category_id' => ! empty($i->library_category_id) ? (int) $i->library_category_id : null,
             'domain' => $i->domain ?? 'mezmur',
             'description' => $i->description,
             'quantity' => $i->quantity,
@@ -66,6 +72,10 @@ final class Items
     public static function list(array $f, array $page): array
     {
         $qb = self::withDepartment()->whereNull('items.deleted_at')->orderBy('items.name');
+        // Strictly exclude books from generic items listing
+        $qb->where(function ($w) {
+            $w->whereNull('items.category')->orWhereNotIn('items.category', ['books', 'book', 'መጻሕፍት']);
+        })->whereNull('items.library_category_id');
         // Amharic or English: name, author, description, code prefix and the category's names.
         if (! empty($f['q'])) $qb->where(fn ($w) => $w->where('items.name', 'like', "%{$f['q']}%")->orWhere('items.code', 'like', "{$f['q']}%")->orWhere('items.author', 'like', "%{$f['q']}%")
             ->orWhere('items.description', 'like', "%{$f['q']}%")->orWhere('ic.name', 'like', "%{$f['q']}%")->orWhere('ic.name_en', 'like', "%{$f['q']}%"));
@@ -81,13 +91,14 @@ final class Items
         return ['items' => array_map(fn ($i) => self::serialize($i), $res['items']), 'meta' => $res['meta']];
     }
 
-    /** Configured categories (+ any older free-text category still used by an item). */
+    /** Configured categories (+ any older free-text category still used by an item). Excludes books. */
     public static function categories(bool $includeInactive = false): array
     {
-        $q = DB::table('item_categories')->orderBy('sort_order')->orderBy('name');
+        $q = DB::table('item_categories')->where('key', '<>', 'books')->orderBy('sort_order')->orderBy('name');
         if (! $includeInactive) $q->where('is_active', true);
         $out = $q->get()->map(fn ($c) => ['key' => $c->key, 'name' => $c->name, 'name_en' => $c->name_en, 'code' => $c->code, 'is_active' => (bool) $c->is_active, 'built_in' => (bool) $c->built_in])->all();
         $known = array_column($out, 'key');
+        $known[] = 'books'; // exclude books from legacy fallback
         foreach (DB::table('items')->whereNull('deleted_at')->whereNotNull('category')->where('category', '!=', '')->distinct()->orderBy('category')->pluck('category') as $legacy) {
             if (! in_array($legacy, $known, true)) $out[] = ['key' => $legacy, 'name' => $legacy, 'name_en' => null, 'code' => 'OT', 'is_active' => true, 'built_in' => false, 'legacy' => true];
         }
@@ -97,7 +108,7 @@ final class Items
     public static function saveCategory(array $actx, ?string $key, array $in): array
     {
         $key ??= trim(preg_replace('/[^a-z0-9_]+/', '_', strtolower((string) ($in['key'] ?? $in['name_en'] ?? ''))), '_');
-        if ($key === '') throw ApiError::field('key', 'REQUIRED');
+        if ($key === '' || $key === 'books') throw ApiError::field('key', 'INVALID_KEY');
         $exists = DB::table('item_categories')->where('key', $key)->exists();
         $row = array_intersect_key($in, array_flip(['name', 'name_en', 'code', 'sort_order', 'is_active']));
         if (isset($row['code'])) $row['code'] = strtoupper($row['code']);
@@ -114,6 +125,7 @@ final class Items
     /** A built-in category (or one still used) is only switched off, never deleted. */
     public static function deleteCategory(array $actx, string $key): array
     {
+        if ($key === 'books') throw ApiError::conflict('PROTECTED_CATEGORY', 'Cannot delete built-in book category');
         $c = DB::table('item_categories')->where('key', $key)->first();
         if (! $c) throw ApiError::notFound('CATEGORY_NOT_FOUND', 'Category not found');
         if ($c->built_in || DB::table('items')->where('category', $key)->whereNull('deleted_at')->exists()) {
@@ -125,17 +137,36 @@ final class Items
         return self::categories(true);
     }
 
-    /** Next free code for a department + category: PREFIX-CAT-NNNN (call under the item-code lock). */
-    public static function nextCode(?int $departmentId, ?string $category): string
+    /**
+     * Next free code for a generic inventory item: CATEGORY-ITEMNAME-SEQUENCE (e.g. FURN-DESK-001).
+     * If name is omitted, uses CATEGORY-ITEM-SEQUENCE. Call under the item-code lock.
+     */
+    public static function nextCode(?int $departmentId, ?string $category, ?string $name = null): string
     {
-        $prefix = $departmentId ? (DB::table('departments')->where('id', $departmentId)->value('code_prefix') ?: "D$departmentId") : 'GEN';
-        $cat = $category ? (DB::table('item_categories')->where('key', $category)->value('code') ?: 'OT') : 'OT';
-        $base = strtoupper("$prefix-$cat-");
+        $catCode = 'GEN';
+        if ($category) {
+            $catCode = DB::table('item_categories')->where('key', $category)->value('code') ?: strtoupper(substr(preg_replace('/[^a-zA-Z0-9]/', '', $category), 0, 4));
+        }
+        if (empty($catCode)) $catCode = 'PROP';
+        $catCode = strtoupper($catCode);
+
+        // Item tag from name (e.g., Desk -> DESK, Projector -> PROJ)
+        $itemTag = 'ITEM';
+        if (! empty($name)) {
+            $cleanName = preg_replace('/[^a-zA-Z0-9]/', '', $name);
+            if (strlen($cleanName) >= 2) {
+                $itemTag = strtoupper(substr($cleanName, 0, 4));
+            }
+        }
+
+        $base = "{$catCode}-{$itemTag}-";
         $max = 0;
         foreach (DB::table('items')->where('code', 'like', $base . '%')->pluck('code') as $code) {
-            if (preg_match('/^' . preg_quote($base, '/') . '(\d+)$/', strtoupper($code), $m)) $max = max($max, (int) $m[1]);
+            if (preg_match('/^' . preg_quote($base, '/') . '(\d+)$/', strtoupper($code), $m)) {
+                $max = max($max, (int) $m[1]);
+            }
         }
-        return $base . str_pad((string) ($max + 1), 4, '0', STR_PAD_LEFT);
+        return $base . str_pad((string) ($max + 1), 3, '0', STR_PAD_LEFT);
     }
 
     public static function get(int $id): array
@@ -152,8 +183,11 @@ final class Items
 
     public static function create(array $actx, array $input): array
     {
+        if (($input['kind'] ?? '') === 'digital' || in_array($input['category'] ?? '', ['books', 'book', 'መጻሕፍት'], true) || ! empty($input['library_category_id'])) {
+            throw ApiError::badRequest('BOOKS_NOT_GENERIC_ITEM', 'Books are managed in the Library and Education Catalog, not generic items');
+        }
         $id = \App\Mz\Db\Locks::waitFor('mz:item-code', fn () => DB::transaction(function () use ($actx, $input) {
-            if (trim((string) ($input['code'] ?? '')) === '') $input['code'] = self::nextCode($input['department_id'] ?? null, $input['category'] ?? null);
+            if (trim((string) ($input['code'] ?? '')) === '') $input['code'] = self::nextCode($input['department_id'] ?? null, $input['category'] ?? null, $input['name'] ?? null);
             if (DB::table('items')->where('code', $input['code'])->exists()) throw self::codeTaken();
             $row = array_intersect_key($input, array_flip(self::FIELDS));
             $newId = DB::table('items')->insertGetId($row + ['quantity' => $input['quantity'], 'available_quantity' => $input['quantity'], 'created_by' => $actx['auth']->id, 'updated_by' => $actx['auth']->id]);
@@ -191,7 +225,7 @@ final class Items
             $i = DB::table('items')->where('id', $id)->whereNull('deleted_at')->lockForUpdate()->first();
             if (! $i) throw ApiError::notFound('ITEM_NOT_FOUND', 'Item not found');
             if (DB::table('borrowings')->where('item_id', $id)->whereIn('status', ['active', 'partially_returned'])->exists()) throw ApiError::conflict('ITEM_HAS_ACTIVE_BORROWINGS', 'Item has active borrowings');
-            DB::table('items')->where('id', $id)->update(['deleted_at' => DB::raw('NOW()'), 'status' => 'retired']);
+            DB::table('items')->where('id', $id)->update(['deleted_at' => now(), 'status' => 'retired']);
             Audit::log($actx, Audit::ITEM_DELETE, 'item', $id, ['code' => $i->code], inTrx: true);
         });
     }

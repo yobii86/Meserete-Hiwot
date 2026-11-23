@@ -66,6 +66,14 @@ class _AlarmScreenState extends ConsumerState<AlarmScreen> with SingleTickerProv
 
   Future<void> _startAlarmSound() async {
     try {
+      const nativeAlarm = MethodChannel('mezmur/alarm');
+      final isRinging = await nativeAlarm.invokeMethod<bool>('isAlarmRinging') ?? false;
+      if (isRinging) {
+        // Native AlarmService is already playing high-priority looping audio on STREAM_ALARM with audio focus!
+        return;
+      }
+    } catch (_) {}
+    try {
       _player = AudioPlayer();
       await _player!.setLoopMode(LoopMode.one);
       // Play high-quality bundled church chime alarm
@@ -77,6 +85,10 @@ class _AlarmScreenState extends ConsumerState<AlarmScreen> with SingleTickerProv
   }
 
   Future<void> _stopAlarmSound() async {
+    try {
+      const nativeAlarm = MethodChannel('mezmur/alarm');
+      await nativeAlarm.invokeMethod('stopAlarm');
+    } catch (_) {}
     if (_player != null) {
       try {
         await _player!.stop();

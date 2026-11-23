@@ -45,66 +45,12 @@ class _EduMaterialsAdminScreenState extends ConsumerState<EduMaterialsAdminScree
     setState(() => _loading = true);
     final repo = ref.read(eduRepositoryProvider);
     try {
-      final subs = await repo.subjects(all: true);
-      _subjects = subs;
-
-      final materials = <Json>[];
-      final lNames = <int, String>{};
-      final sNames = <int, String>{};
-
-      for (final s in subs) {
-        final sId = asInt(s['id']);
-        if (sId == null) continue;
-        sNames[sId] = asStr(s['name']) ?? asStr(s['title']) ?? '';
-
-        final detail = await repo.subject(sId);
-        final units = asJsonList(detail['units']);
-        final loose = asJsonList(detail['lessons']);
-
-        final allLessons = <Json>[...loose];
-        for (final u in units) {
-          allLessons.addAll(asJsonList(u['lessons']));
-        }
-
-        for (final lsn in allLessons) {
-          final lId = asInt(lsn['id']);
-          if (lId == null) continue;
-          final lTitle = asStr(lsn['title']) ?? '';
-          lNames[lId] = lTitle;
-
-          // Fetch full lesson detail if materials not nested
-          var lMaterials = asJsonList(lsn['materials']);
-          if (lMaterials.isEmpty && asIntOr(lsn['material_count']) > 0) {
-            final fullLesson = await repo.lesson(lId);
-            lMaterials = asJsonList(fullLesson['materials']);
-          }
-
-          for (final m in lMaterials) {
-            materials.add({
-              ...m,
-              'subject_id': sId,
-              'subject_name': sNames[sId],
-              'lesson_id': lId,
-              'lesson_title': lTitle,
-            });
-          }
-        }
-
-        // Direct materials for this subject/category (Feature B)
-        try {
-          final direct = await repo.directMaterials(sId, 0);
-          for (final dm in direct) {
-            final g = asInt(dm['grade']);
-            materials.add({
-              ...dm,
-              'subject_id': sId,
-              'subject_name': sNames[sId],
-              'lesson_id': null,
-              'lesson_title': g != null ? 'Grade $g Direct' : 'Direct Material',
-            });
-          }
-        } catch (_) {}
-      }
+      final results = await Future.wait([
+        repo.subjects(all: true),
+        repo.allMaterials(),
+      ]);
+      _subjects = results[0];
+      final materials = results[1];
 
       if (mounted) {
         setState(() {

@@ -43,6 +43,8 @@ class Program {
     this.reminderIntervalDays,
     this.reminderIntervalStart,
     this.classIds = const [],
+    this.ordinalWeeks = const [],
+    this.recurringWeekdays = const [],
     this.isEducation = false,
     this.scheduleId,
   });
@@ -117,6 +119,8 @@ class Program {
 
   /// Education program linkage: classes served by this program.
   final List<int> classIds;
+  final List<int> ordinalWeeks;
+  final List<int> recurringWeekdays;
   final bool isEducation;
   final int? scheduleId;
 
@@ -200,6 +204,8 @@ class Program {
       reminderIntervalDays: asInt(r['interval_days']),
       reminderIntervalStart: asDate(r['interval_start']),
       classIds: asValues(j['class_ids'], (e) => asIntOr(e)),
+      ordinalWeeks: asValues(j['ordinal_weeks'], (e) => asIntOr(e)),
+      recurringWeekdays: asValues(j['recurring_weekdays'], (e) => asIntOr(e)),
       isEducation: asBool(j['is_education']),
       scheduleId: asInt(j['schedule_id']),
     );
@@ -222,12 +228,23 @@ class Occurrence {
 
 /// Configurable program category (General, Education, Mezmur …).
 class ProgramCategory {
-  const ProgramCategory({required this.id, required this.name, this.nameEn, this.color, this.isActive = true, this.displayOrder = 0, this.reminderOffsets, this.reminderIntervalDays});
+  const ProgramCategory({
+    required this.id,
+    required this.name,
+    this.nameEn,
+    this.color,
+    this.isActive = true,
+    this.isEducation = false,
+    this.displayOrder = 0,
+    this.reminderOffsets,
+    this.reminderIntervalDays,
+  });
   final int id;
   final String name;
   final String? nameEn;
   final String? color; // #RRGGBB
   final bool isActive;
+  final bool isEducation;
   final int displayOrder;
   /// Reminder rules of this program type: what new programs of the type start with (null = general defaults).
   final List<int>? reminderOffsets;
@@ -241,6 +258,9 @@ class ProgramCategory {
         nameEn: asStr(j['name_en']),
         color: asStr(j['color']),
         isActive: j['is_active'] == null || asBool(j['is_active']),
+        isEducation: asBool(j['is_education']) ||
+            (asStr(j['name'])?.contains('ትምህርት') ?? false) ||
+            (asStr(j['name_en'])?.toLowerCase().contains('education') ?? false),
         displayOrder: asIntOr(j['display_order']),
         reminderOffsets: j['reminder_offsets'] is List ? asValues(j['reminder_offsets'], (e) => asIntOr(e)) : null,
         reminderIntervalDays: asInt(j['reminder_interval_days']),
@@ -271,7 +291,22 @@ class AttendanceStats {
 
 /// One program occurrence on a member's calendar.
 class CalendarEntry {
-  const CalendarEntry({required this.programId, required this.title, this.location, this.category, required this.date, required this.startsAt, required this.endsAt, required this.status});
+  const CalendarEntry({
+    required this.programId,
+    required this.title,
+    this.location,
+    this.category,
+    required this.date,
+    required this.startsAt,
+    required this.endsAt,
+    required this.status,
+    this.attendedAt,
+    this.signatureStatus,
+    this.recorderName,
+    this.signatureId,
+    this.elapsedSeconds,
+    this.notes,
+  });
   final int programId;
   final String title;
   final String? location;
@@ -280,8 +315,14 @@ class CalendarEntry {
   final DateTime startsAt;
   final DateTime endsAt;
 
-  /// present | late | excused | absent | today | upcoming
+  /// present | late | excused | absent | today | upcoming | suspended
   final String status;
+  final DateTime? attendedAt;
+  final String? signatureStatus;
+  final String? recorderName;
+  final int? signatureId;
+  final int? elapsedSeconds;
+  final String? notes;
 
   factory CalendarEntry.fromJson(Json j) => CalendarEntry(
         programId: asIntOr(j['program_id']),
@@ -292,6 +333,12 @@ class CalendarEntry {
         startsAt: asDate(j['starts_at']) ?? DateTime.now(),
         endsAt: asDate(j['ends_at']) ?? DateTime.now(),
         status: asStr(j['status']) ?? 'upcoming',
+        attendedAt: asDate(j['attended_at']),
+        signatureStatus: asStr(j['signature_status']),
+        recorderName: asStr(j['recorder_name']),
+        signatureId: asInt(j['signature_id']),
+        elapsedSeconds: asInt(j['elapsed_seconds']),
+        notes: asStr(j['notes']),
       );
 }
 
@@ -417,7 +464,20 @@ class PermissionRequest {
 }
 
 class AttendanceRecord {
-  const AttendanceRecord({required this.id, required this.status, this.attendedAt, required this.programId, required this.programTitle, this.startsAt, this.location});
+  const AttendanceRecord({
+    required this.id,
+    required this.status,
+    this.attendedAt,
+    required this.programId,
+    required this.programTitle,
+    this.startsAt,
+    this.location,
+    this.memberName,
+    this.calendarDate,
+    this.signatureIndicator,
+    this.actualTime,
+    this.signatureUrl,
+  });
   final int id;
   final String status;
   final DateTime? attendedAt;
@@ -425,15 +485,25 @@ class AttendanceRecord {
   final String programTitle;
   final DateTime? startsAt;
   final String? location;
+  final String? memberName;
+  final String? calendarDate;
+  final String? signatureIndicator;
+  final String? actualTime;
+  final String? signatureUrl;
 
   factory AttendanceRecord.fromJson(Json j) => AttendanceRecord(
         id: asIntOr(j['id']),
         status: asStr(j['status']) ?? 'present',
         attendedAt: asDate(j['attended_at']),
         programId: asIntOr(j['program_id']),
-        programTitle: asStr(j['program_title']) ?? '',
+        programTitle: asStr(j['program_title']) ?? asStr(j['program_name']) ?? '',
         startsAt: asDate(j['starts_at']),
         location: asStr(j['location']),
+        memberName: asStr(j['member_name']),
+        calendarDate: asStr(j['calendar_date']),
+        signatureIndicator: asStr(j['signature_indicator']) ?? asStr(j['signature_status']),
+        actualTime: asStr(j['actual_time']),
+        signatureUrl: asStr(j['signature_url']),
       );
 }
 

@@ -617,4 +617,154 @@ class ContributionsAndPmTest extends TestCase
         $published = DecisionService::publish($actx, $dec['id']);
         $this->assertEquals('published', $published['status']);
     }
+
+    public function test_admin_contribution_summary_and_month_based_ordering(): void
+    {
+        // Set rate: worker = 200 ETB
+        DB::table('payment_rates')->insert([
+            'member_type' => 'worker',
+            'monthly_amount' => 200,
+            'currency' => 'ETB',
+            'effective_from' => '2020-01-01',
+        ]);
+
+        $uA = DB::table('users')->insertGetId([
+            'full_name' => 'Abebe Paid',
+            'member_no' => 'W-001',
+            'member_group' => 'youth_adult',
+            'member_type' => 'worker',
+            'account_type' => 'user',
+            'status' => 'active',
+            'membership_status' => 'active',
+        ]);
+        $uB = DB::table('users')->insertGetId([
+            'full_name' => 'Bekele Partial',
+            'member_no' => 'W-002',
+            'member_group' => 'youth_adult',
+            'member_type' => 'worker',
+            'account_type' => 'user',
+            'status' => 'active',
+            'membership_status' => 'active',
+        ]);
+        $uC = DB::table('users')->insertGetId([
+            'full_name' => 'Chala Pending',
+            'member_no' => 'W-003',
+            'member_group' => 'youth_adult',
+            'member_type' => 'worker',
+            'account_type' => 'user',
+            'status' => 'active',
+            'membership_status' => 'active',
+        ]);
+        $uD = DB::table('users')->insertGetId([
+            'full_name' => 'Dawit Unpaid',
+            'member_no' => 'W-004',
+            'member_group' => 'youth_adult',
+            'member_type' => 'worker',
+            'account_type' => 'user',
+            'status' => 'active',
+            'membership_status' => 'active',
+        ]);
+
+        // uA pays months 1, 2, 3 of 2019
+        DB::table('payments')->insert([
+            'user_id' => $uA,
+            'period' => '2019-01',
+            'coverage_end' => '2019-03',
+            'months' => 3,
+            'amount' => 600,
+            'monthly_rate' => 200,
+            'currency' => 'ETB',
+            'method' => 'telebirr',
+            'paid_on' => '2026-10-15',
+        ]);
+
+        // uB pays month 1 of 2019 only
+        DB::table('payments')->insert([
+            'user_id' => $uB,
+            'period' => '2019-01',
+            'coverage_end' => '2019-01',
+            'months' => 1,
+            'amount' => 200,
+            'monthly_rate' => 200,
+            'currency' => 'ETB',
+            'method' => 'bank',
+            'paid_on' => '2026-10-10',
+        ]);
+
+        // uC has a submitted receipt for month 3
+        DB::table('contribution_receipts')->insert([
+            'user_id' => $uC,
+            'period' => '2019-03',
+            'coverage_end' => '2019-03',
+            'months' => 1,
+            'expected_amount' => 200,
+            'submitted_amount' => 200,
+            'currency' => 'ETB',
+            'method' => 'telebirr',
+            'paid_on' => '2026-10-18',
+            'receipt_path' => 'private/receipts/test.jpg',
+            'status' => 'submitted',
+        ]);
+
+        // Test contributionSummary for period 2019-03 (Hidar 2019)
+        $summary = Payments::contributionSummary(['period' => '2019-03']);
+        $this->assertEquals('2019-03', $summary['period']);
+        $this->assertEquals(2019, $summary['year']);
+        $this->assertEquals(3, $summary['month']);
+        $this->assertGreaterThanOrEqual(4, $summary['total_expected_users']);
+        $this->assertGreaterThanOrEqual(1, $summary['paid_users']);
+        $this->assertGreaterThanOrEqual(1, $summary['partially_paid_users']);
+        $this->assertGreaterThanOrEqual(1, $summary['pending_users']);
+        $this->assertGreaterThan(0, $summary['total_expected_amount']);
+        $this->assertGreaterThan(0, $summary['total_collected_amount']);
+        $this->assertGreaterThan(0, $summary['collection_percentage']);
+
+        // Test detailedContributions ordering
+        $res = Payments::detailedContributions(['period' => '2019-03'], ['page' => 1, 'limit' => 50]);
+        $items = $res['items'];
+        $this->assertNotEmpty($items);
+
+        $rowA = collect($items)->firstWhere('user_id', $uA);
+        $rowB = collect($items)->firstWhere('user_id', $uB);
+        $rowC = collect($items)->firstWhere('user_id', $uC);
+        $rowD = collect($items)->firstWhere('user_id', $uD);
+
+        $this->assertNotNull($rowA);
+        $this->assertNotNull($rowB);
+        $this->assertNotNull($rowC);
+        $this->assertNotNull($rowD);
+
+        // Verification of status and buckets
+        $this->assertEquals('paid', $rowA['status']);
+        $this->assertEquals(1, $rowA['priority']);
+        $this->assertEquals(3, $rowA['months_paid']);
+        $this->assertEquals(0, $rowA['months_unpaid']);
+        $this->assertEquals(0, $rowA['outstanding']);
+
+        $this->assertEquals('partial', $rowB['status']);
+        $this->assertEquals(2, $rowB['priority']);
+        $this->assertEquals(1, $rowB['months_paid']);
+        $this->assertEquals(2, $rowB['months_unpaid']);
+        $this->assertEquals(400, $rowB['outstanding']);
+
+        $this->assertEquals('pending', $rowC['status']);
+        $this->assertEquals(3, $rowC['priority']);
+        $this->assertTrue($rowC['has_pending_receipt']);
+
+        $this->assertEquals('unpaid', $rowD['status']);
+        $this->assertEquals(4, $rowD['priority']);
+        $this->assertEquals(0, $rowD['months_paid']);
+        $this->assertEquals(3, $rowD['months_unpaid']);
+
+        // Verify order in the returned items list
+        $indexA = array_search($rowA, $items, true);
+        $indexB = array_search($rowB, $items, true);
+        $indexC = array_search($rowC, $items, true);
+        $indexD = array_search($rowD, $items, true);
+
+        $this->assertLessThan($indexB, $indexA, 'Paid user A must come before partial user B');
+        $this->assertLessThan($indexC, $indexB, 'Partial user B must come before pending user C');
+        $this->assertLessThan($indexD, $indexC, 'Pending user C must come before unpaid user D');
+    }
 }
+

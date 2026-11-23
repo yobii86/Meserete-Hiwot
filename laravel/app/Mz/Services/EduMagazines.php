@@ -8,6 +8,7 @@ use App\Mz\Notifications\Notifications;
 use App\Mz\Support\ApiError;
 use App\Mz\Support\Dates;
 use App\Mz\Support\Page;
+use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Facades\DB;
 
 /**
@@ -99,6 +100,9 @@ final class EduMagazines
         if (! $canManage) {
             if ($mag->status !== 'published' || ! $mag->published_at || Dates::sql($mag->published_at) > self::now()) {
                 throw ApiError::notFound('MAGAZINE_NOT_FOUND', 'Magazine issue not found');
+            }
+            if ($auth->accountType === 'user') {
+                Activity::track($auth->id, Activity::MAGAZINE_VIEW, 'edu_magazine', $id, ['title' => $mag->title, 'issue_number' => $mag->issue_number]);
             }
         }
 
@@ -227,6 +231,104 @@ final class EduMagazines
         Audit::log($actx, 'edu_magazine.delete', 'edu_magazine', $id, ['title' => $mag->title]);
     }
 
+    public static function uploadPdf(array $actx, int $id, ?UploadedFile $file): array
+    {
+        $auth = $actx['auth'];
+        self::assertCanManage($auth);
+
+        if (! $file) {
+            throw ApiError::badRequest('FILE_REQUIRED', 'PDF file is required');
+        }
+
+        $mag = self::issueQuery()->where('id', $id)->first();
+        if (! $mag) throw ApiError::notFound('MAGAZINE_NOT_FOUND', 'Magazine issue not found');
+
+        $saved = Storage::save('document', Storage::FOLDERS['MAGAZINES'], $file);
+        if ($saved['mime'] !== 'application/pdf') {
+            Storage::remove($saved['path']);
+            throw ApiError::badRequest('INVALID_FILE_TYPE', 'Only PDF files are supported for magazine issues');
+        }
+
+        if (! empty($mag->pdf_path) && $mag->pdf_path !== $saved['path'] && str_starts_with($mag->pdf_path, 'public/magazines/')) {
+            Storage::remove($mag->pdf_path);
+        }
+
+        DB::table('edu_magazines')->where('id', $id)->update([
+            'pdf_path' => $saved['path'],
+            'pdf_mime' => $saved['mime'],
+            'pdf_size' => $saved['size'],
+            'updated_by' => $auth->id,
+            'updated_at' => self::now(),
+        ]);
+
+        try {
+            MediaProcessing::renderPdfPagesToWebp(
+                Storage::resolveInside($saved['path']),
+                'images/magazines/pages_' . $id,
+                'public',
+                150,
+                85,
+                'magazine',
+                $id
+            );
+        } catch (\Throwable $e) {
+            \Illuminate\Support\Facades\Log::warning('EduMagazine PDF rendering error: ' . $e->getMessage());
+        }
+
+        Audit::log($actx, 'edu_magazine.upload_pdf', 'edu_magazine', $id, ['path' => $saved['path'], 'size' => $saved['size']]);
+        return self::detail($auth, $id);
+    }
+
+    public static function uploadCover(array $actx, int $id, ?UploadedFile $file): array
+    {
+        $auth = $actx['auth'];
+        self::assertCanManage($auth);
+
+        if (! $file) {
+            throw ApiError::badRequest('FILE_REQUIRED', 'Cover image file is required');
+        }
+
+        $mag = self::issueQuery()->where('id', $id)->first();
+        if (! $mag) throw ApiError::notFound('MAGAZINE_NOT_FOUND', 'Magazine issue not found');
+
+        $saved = Storage::save('image', Storage::FOLDERS['MAGAZINE_COVERS'], $file);
+
+        if (! empty($mag->cover_image) && $mag->cover_image !== $saved['path'] && str_starts_with($mag->cover_image, 'public/images/magazines/')) {
+            Storage::remove($mag->cover_image);
+        }
+
+        DB::table('edu_magazines')->where('id', $id)->update([
+            'cover_image' => $saved['path'],
+            'updated_by' => $auth->id,
+            'updated_at' => self::now(),
+        ]);
+
+        Audit::log($actx, 'edu_magazine.upload_cover', 'edu_magazine', $id, ['path' => $saved['path']]);
+        return self::detail($auth, $id);
+    }
+
+    public static function removeCover(array $actx, int $id): array
+    {
+        $auth = $actx['auth'];
+        self::assertCanManage($auth);
+
+        $mag = self::issueQuery()->where('id', $id)->first();
+        if (! $mag) throw ApiError::notFound('MAGAZINE_NOT_FOUND', 'Magazine issue not found');
+
+        if (! empty($mag->cover_image) && str_starts_with($mag->cover_image, 'public/images/magazines/')) {
+            Storage::remove($mag->cover_image);
+        }
+
+        DB::table('edu_magazines')->where('id', $id)->update([
+            'cover_image' => null,
+            'updated_by' => $auth->id,
+            'updated_at' => self::now(),
+        ]);
+
+        Audit::log($actx, 'edu_magazine.remove_cover', 'edu_magazine', $id);
+        return self::detail($auth, $id);
+    }
+
     /** Quizzes associated with this magazine issue. */
     public static function quizzes(AuthContext $auth, int $id): array
     {
@@ -343,11 +445,48 @@ final class EduMagazines
         }
     }
 
+    /** Stream or download Magazine PDF supporting HTTP 206 byte ranges. */
+    public static function streamPdf(int $id, bool $download = false)
+    {
+        $mag = DB::table('edu_magazines')->where('id', $id)->whereNull('deleted_at')->first();
+        if (! $mag || ! $mag->pdf_path) {
+            throw ApiError::notFound('MAGAZINE_NOT_FOUND', 'Magazine PDF not found');
+        }
+
+        try {
+            $abs = Storage::resolveInside($mag->pdf_path);
+        } catch (\Throwable) {
+            throw ApiError::notFound('MAGAZINE_NOT_FOUND', 'Magazine PDF file not found');
+        }
+
+        if (! file_exists($abs)) {
+            throw ApiError::notFound('MAGAZINE_NOT_FOUND', 'Magazine PDF file not found on disk');
+        }
+
+        $headers = [
+            'Content-Type' => 'application/pdf',
+            'Accept-Ranges' => 'bytes',
+            'Cache-Control' => 'public, max-age=604800',
+            'X-Content-Type-Options' => 'nosniff',
+            'Access-Control-Allow-Origin' => '*',
+            'Access-Control-Allow-Headers' => 'Range, Authorization, Content-Type',
+            'Access-Control-Expose-Headers' => 'Content-Range, Content-Length, Accept-Ranges',
+        ];
+
+        if ($download) {
+            $filename = ($mag->title ? preg_replace('/[^a-zA-Z0-9_\-\.]/', '_', $mag->title) : 'magazine') . '.pdf';
+            return response()->download($abs, $filename, $headers);
+        }
+
+        return response()->file($abs, $headers);
+    }
+
     private static function serialize(object $m, bool $canManage): array
     {
         $now = self::now();
         $isPublished = $m->status === 'published' && $m->published_at && Dates::sql($m->published_at) <= $now;
 
+        $streamUrl = $m->pdf_path ? url("/api/v1/edu/magazines/{$m->id}/pdf") : null;
         $pdfUrl = Storage::url($m->pdf_path);
         if (! $pdfUrl && $m->pdf_path) {
             $base = config('mz.public_base_url');
@@ -371,7 +510,9 @@ final class EduMagazines
             'period_info' => $m->period_info,
             'description' => $m->description,
             'cover_url' => $coverUrl,
-            'pdf_url' => $pdfUrl,
+            'pdf_url' => $streamUrl ?: $pdfUrl,
+            'stream_url' => $streamUrl,
+            'direct_pdf_url' => $pdfUrl,
             'pdf_mime' => $m->pdf_mime,
             'pdf_size' => (int) $m->pdf_size,
             'status' => $m->status,

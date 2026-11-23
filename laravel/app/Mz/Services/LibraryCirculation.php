@@ -83,8 +83,9 @@ final class LibraryCirculation
     // ------------------------------------------------------------------ Query builders
     private static function copyQuery()
     {
+        $table = \Illuminate\Support\Facades\Schema::hasTable('books') ? 'books' : 'items';
         return DB::table('library_copies as c')
-            ->join('items as i', 'i.id', '=', 'c.item_id')
+            ->join("{$table} as i", 'i.id', '=', 'c.item_id')
             ->leftJoin('library_categories as cat', 'cat.id', '=', 'i.library_category_id')
             ->leftJoin('library_loans as l', fn ($j) => $j->on('l.copy_id', '=', 'c.id')->where('l.status', 'active'))
             ->leftJoin('users as lu', 'lu.id', '=', 'l.user_id')
@@ -106,9 +107,10 @@ final class LibraryCirculation
 
     private static function loanQuery()
     {
+        $table = \Illuminate\Support\Facades\Schema::hasTable('books') ? 'books' : 'items';
         return DB::table('library_loans as l')
             ->join('library_copies as c', 'c.id', '=', 'l.copy_id')
-            ->join('items as i', 'i.id', '=', 'c.item_id')
+            ->join("{$table} as i", 'i.id', '=', 'c.item_id')
             ->join('users as u', 'u.id', '=', 'l.user_id')
             ->leftJoin('users as iu', 'iu.id', '=', 'l.issued_by')
             ->leftJoin('users as ru', 'ru.id', '=', 'l.received_by')
@@ -184,6 +186,72 @@ final class LibraryCirculation
         Audit::log($actx, 'library.copy_create', 'library_copy', $id, ['copy_code' => $copyCode, 'item_id' => $itemId]);
 
         return self::serializeCopy(self::copyQuery()->where('c.id', $id)->first());
+    }
+
+    public static function updateCopy(array $actx, int $id, array $data): array
+    {
+        $copy = DB::table('library_copies')->where('id', $id)->first();
+        if (! $copy) throw ApiError::notFound('COPY_NOT_FOUND', 'Copy not found');
+
+        $up = [
+            'updated_at' => now(),
+        ];
+        if (array_key_exists('condition', $data)) {
+            if (! in_array($data['condition'], self::CONDITIONS, true)) {
+                throw ApiError::field('condition', 'INVALID_CONDITION');
+            }
+            $up['condition'] = $data['condition'];
+        }
+        if (array_key_exists('location', $data)) {
+            $up['location'] = ! empty($data['location']) ? mb_substr(trim((string) $data['location']), 0, 100) : null;
+        }
+        if (array_key_exists('status', $data)) {
+            if (! in_array($data['status'], self::STATUSES, true)) {
+                throw ApiError::field('status', 'INVALID_STATUS');
+            }
+            $oldStatus = $copy->status;
+            $newStatus = $data['status'];
+            $up['status'] = $newStatus;
+            if ($oldStatus === 'available' && $newStatus !== 'available') {
+                DB::table('items')->where('id', $copy->item_id)->where('available_quantity', '>', 0)->decrement('available_quantity');
+            } elseif ($oldStatus !== 'available' && $newStatus === 'available') {
+                DB::table('items')->where('id', $copy->item_id)->increment('available_quantity');
+            }
+        }
+
+        DB::table('library_copies')->where('id', $id)->update($up);
+        Audit::log($actx, 'library.copy_update', 'library_copy', $id, $up);
+
+        return self::serializeCopy(self::copyQuery()->where('c.id', $id)->first());
+    }
+
+    public static function deleteCopy(array $actx, int $id): array
+    {
+        $copy = DB::table('library_copies')->where('id', $id)->first();
+        if (! $copy) throw ApiError::notFound('COPY_NOT_FOUND', 'Copy not found');
+
+        $activeLoan = DB::table('library_loans')->where(['copy_id' => $id, 'status' => 'active'])->exists();
+        if ($activeLoan) {
+            throw ApiError::conflict('COPY_ON_LOAN', 'Cannot delete copy while currently on loan');
+        }
+
+        DB::transaction(function () use ($copy, $id, $actx) {
+            DB::table('library_copies')->where('id', $id)->delete();
+            $bookTable = \Illuminate\Support\Facades\Schema::hasTable('books') ? 'books' : 'items';
+            DB::table($bookTable)->where('id', $copy->item_id)->where('quantity', '>', 0)->decrement('quantity');
+            if ($copy->status === 'available') {
+                DB::table($bookTable)->where('id', $copy->item_id)->where('available_quantity', '>', 0)->decrement('available_quantity');
+            }
+            if ($bookTable !== 'items' && \Illuminate\Support\Facades\Schema::hasTable('items')) {
+                DB::table('items')->where('id', $copy->item_id)->where('quantity', '>', 0)->decrement('quantity');
+                if ($copy->status === 'available') {
+                    DB::table('items')->where('id', $copy->item_id)->where('available_quantity', '>', 0)->decrement('available_quantity');
+                }
+            }
+            Audit::log($actx, 'library.copy_delete', 'library_copy', $id, ['copy_code' => $copy->copy_code]);
+        });
+
+        return ['id' => $id, 'deleted' => true];
     }
 
     // ------------------------------------------------------------------ Circulation Actions
@@ -265,7 +333,11 @@ final class LibraryCirculation
                 'updated_at' => now(),
             ]);
 
-            DB::table('items')->where('id', $copy->item_id)->where('available_quantity', '>', 0)->decrement('available_quantity');
+            $bookTable = \Illuminate\Support\Facades\Schema::hasTable('books') ? 'books' : 'items';
+            DB::table($bookTable)->where('id', $copy->item_id)->where('available_quantity', '>', 0)->decrement('available_quantity');
+            if ($bookTable !== 'items' && \Illuminate\Support\Facades\Schema::hasTable('items')) {
+                DB::table('items')->where('id', $copy->item_id)->where('available_quantity', '>', 0)->decrement('available_quantity');
+            }
 
             Audit::log($actx, 'library.checkout', 'library_loan', $loanId, [
                 'copy_id' => $copy->id,
@@ -323,10 +395,17 @@ final class LibraryCirculation
                 'updated_at' => now(),
             ]);
 
+            $bookTable = \Illuminate\Support\Facades\Schema::hasTable('books') ? 'books' : 'items';
             if ($newCopyStatus === 'available') {
-                DB::table('items')->where('id', $loan->item_id)->increment('available_quantity');
+                DB::table($bookTable)->where('id', $loan->item_id)->increment('available_quantity');
+                if ($bookTable !== 'items' && \Illuminate\Support\Facades\Schema::hasTable('items')) {
+                    DB::table('items')->where('id', $loan->item_id)->increment('available_quantity');
+                }
             } else {
-                DB::table('items')->where('id', $loan->item_id)->where('quantity', '>', 0)->decrement('quantity');
+                DB::table($bookTable)->where('id', $loan->item_id)->where('quantity', '>', 0)->decrement('quantity');
+                if ($bookTable !== 'items' && \Illuminate\Support\Facades\Schema::hasTable('items')) {
+                    DB::table('items')->where('id', $loan->item_id)->where('quantity', '>', 0)->decrement('quantity');
+                }
             }
 
             Audit::log($actx, 'library.return', 'library_loan', $loan->id, [

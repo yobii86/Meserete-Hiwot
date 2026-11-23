@@ -121,8 +121,132 @@ class AdminRepository {
   Future<List<Json>> checkProgramOverlap(Json body) =>
       _api.post('/programs/check-overlap', body: body, parse: asJsonList);
 
+  Future<Json> previewSchedule(Json body) =>
+      _api.post('/programs/preview-schedule', body: body, parse: asJson);
+
   Future<List<Json>> occurrences(int id, {required String from, required String to}) =>
       _api.get('/programs/$id/occurrences', query: {'from': from, 'to': to}, parse: asJsonList);
+  Future<Json> updateOccurrence(int id, String date, Json body) =>
+      _api.put('/programs/$id/occurrences/$date', body: body, parse: asJson);
+
+  // ---------------------------------------------------------------- admin attendance management
+  Future<Json> adminAttendanceYearlySummary({
+    int? year,
+    String? memberGroup,
+    String? memberType,
+    int? categoryId,
+    int? programId,
+  }) =>
+      _api.get('/programs/attendance/admin/yearly-summary', query: {
+        'year': year,
+        'member_group': memberGroup,
+        'member_type': memberType,
+        'category_id': categoryId,
+        'program_id': programId,
+      }, parse: asJson);
+
+  Future<Json> adminAttendanceMonthlySummary({
+    int? year,
+    int? month,
+    String? memberGroup,
+    String? memberType,
+    int? categoryId,
+    int? programId,
+  }) =>
+      _api.get('/programs/attendance/admin/monthly-summary', query: {
+        'year': year,
+        'month': month,
+        'member_group': memberGroup,
+        'member_type': memberType,
+        'category_id': categoryId,
+        'program_id': programId,
+      }, parse: asJson);
+
+  Future<List<Json>> adminAttendanceByProgram({int? year}) =>
+      _api.get('/programs/attendance/admin/by-program', query: {'year': year}, parse: asJsonList);
+
+  Future<Json> adminAttendanceMemberProfile(int userId, {int? year}) =>
+      _api.get('/programs/attendance/admin/member/$userId', query: {'year': year}, parse: asJson);
+
+  Future<List<Json>> adminAttendanceSearchMembers(String query) =>
+      _api.get('/programs/attendance/admin/members/search', query: {'q': query}, parse: asJsonList);
+
+  Future<Json> adminAttendanceOverview({
+    String? from,
+    String? to,
+    String? date,
+    int? programId,
+    int? categoryId,
+    String? status,
+    int? takerId,
+    int? classId,
+    String? q,
+  }) =>
+      _api.get('/programs/attendance/admin/overview', query: {
+        'from': from,
+        'to': to,
+        'date': date,
+        'program_id': programId,
+        'category_id': categoryId,
+        'status': status,
+        'taker_id': takerId,
+        'class_id': classId,
+        'q': q,
+      }, parse: asJson);
+
+  Future<Paged<Json>> adminAttendanceRecords({
+    String? from,
+    String? to,
+    String? date,
+    int? programId,
+    int? categoryId,
+    String? status,
+    int? takerId,
+    int? classId,
+    String? q,
+    int page = 1,
+    int limit = 25,
+  }) =>
+      _api.getPage(
+        '/programs/attendance/admin/records',
+        (j) => j,
+        page: page,
+        query: {
+          'from': from,
+          'to': to,
+          'date': date,
+          'program_id': programId,
+          'category_id': categoryId,
+          'status': status,
+          'taker_id': takerId,
+          'class_id': classId,
+          'q': q,
+          'limit': limit,
+        },
+      );
+
+  Future<Json> adminAttendanceExport({
+    String? from,
+    String? to,
+    String? date,
+    int? programId,
+    int? categoryId,
+    String? status,
+    int? takerId,
+    int? classId,
+    String? q,
+  }) =>
+      _api.get('/programs/attendance/admin/export', query: {
+        'from': from,
+        'to': to,
+        'date': date,
+        'program_id': programId,
+        'category_id': categoryId,
+        'status': status,
+        'taker_id': takerId,
+        'class_id': classId,
+        'q': q,
+      }, parse: asJson);
 
   // ---------------------------------------------------------------- program categories
   Future<List<ProgramCategory>> programCategories() => _api.get('/programs/categories/all', parse: (d) => asJsonList(d).map(ProgramCategory.fromJson).toList());
@@ -145,12 +269,13 @@ class AdminRepository {
   Future<List<Json>> saveItemCategory(String? key, Json body) =>
       key == null ? _api.post('/items/categories', body: body, parse: asJsonList) : _api.patch('/items/categories/$key', body: body, parse: asJsonList);
   Future<List<Json>> deleteItemCategory(String key) => _api.delete('/items/categories/$key', parse: asJsonList);
-  Future<String> nextItemCode({int? departmentId, String? category}) =>
-      _api.get('/items/next-code', query: {'department_id': departmentId?.toString(), 'category': category}, parse: (d) => '${asJson(d)['code']}');
+  Future<String> nextItemCode({int? departmentId, String? category, String? name}) =>
+      _api.get('/items/next-code', query: {'department_id': departmentId?.toString(), 'category': category, 'name': name}, parse: (d) => '${asJson(d)['code']}');
 
   // ---------------------------------------------------------------- library
   Future<Paged<ItemModel>> items({String? q, bool availableOnly = false, int page = 1}) =>
       _api.getPage('/items', ItemModel.fromJson, page: page, query: {'q': q, 'available': availableOnly ? 'true' : null});
+  Future<ItemModel> item(int id) => _api.get('/items/$id', parse: (d) => ItemModel.fromJson(asJson(d)));
   Future<ItemModel> createItem(Json body) => _api.post('/items', body: body, parse: (d) => ItemModel.fromJson(asJson(d)));
   Future<ItemModel> updateItem(int id, Json body) => _api.patch('/items/$id', body: body, parse: (d) => ItemModel.fromJson(asJson(d)));
   Future<void> deleteItem(int id) => _api.delete<void>('/items/$id');
@@ -244,4 +369,8 @@ class AdminRepository {
   Future<Json> systemOverview() => _api.get('/system/overview', parse: asJson);
   Future<Paged<Json>> systemAdmins({int page = 1}) => _api.getPage('/system/admins', (j) => j, page: page, limit: 50);
   Future<void> systemForceLogout(int id) => _api.post<void>('/system/admins/$id/force-logout');
+
+  // ---------------------------------------------------------------- telegram diagnostic
+  Future<Json> getTelegramStatus() => _api.get('/supervision/telegram/status', parse: asJson);
+  Future<Json> testTelegramConnection() => _api.post('/supervision/telegram/test', parse: asJson);
 }

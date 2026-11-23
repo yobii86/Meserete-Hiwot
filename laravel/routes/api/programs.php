@@ -96,6 +96,7 @@ Route::prefix('programs')->group(function () {
         $q = Ctx::query(PS::calendarQuery()->omit(['category_id']));
         return Http::ok(Programs::occurrences($id, $q['from'], $q['to']));
     })->middleware(['mz', 'mz:any,programs.manage,attendance.manage,attendance.view']);
+    Route::post('preview-schedule', fn () => Http::ok(Programs::previewSchedule(Ctx::body(PS::checkOverlap()))))->middleware($manage);
     Route::post('check-overlap', fn () => Http::ok(Programs::checkOverlap(Ctx::body(PS::checkOverlap()))))->middleware($manage);
     Route::post('/', fn () => Http::created(Programs::create(Ctx::actx(), Ctx::body(PS::programCreate()))))->middleware($manage);
     Route::patch('{id}', function () {
@@ -129,8 +130,19 @@ Route::prefix('programs')->group(function () {
     Route::put('{id}/occurrences/{date}', function () {
         $id = Ctx::id();
         $date = Z::parse(PS::isoDate(), request()->route('date'));
+        $auth = Ctx::auth();
+        $canManagePrograms = $auth->can('programs.manage');
+        $canManageAttendance = $auth->canAny(['attendance.manage', 'attendance.override']);
+        $isAssignedTaker = false;
+        if (! $canManagePrograms && ! $canManageAttendance) {
+            $isAssignedTaker = \Illuminate\Support\Facades\DB::table('program_attendance_takers')->where(['program_id' => $id, 'user_id' => $auth->id])->exists()
+                || \Illuminate\Support\Facades\DB::table('attendance_sessions')->where(['program_id' => $id, 'occurrence_date' => $date, 'taker_id' => $auth->id])->exists();
+        }
+        if (! $canManagePrograms && ! $canManageAttendance && ! $isAssignedTaker) {
+            throw \App\Mz\Support\ApiError::forbidden('OCCURRENCE_MANAGE_FORBIDDEN', 'Only an authorized administrator or the assigned attendance taker may update this occurrence');
+        }
         return Http::ok(Programs::setOccurrence(Ctx::actx(), $id, $date, Ctx::body(PS::occurrenceChange())));
-    })->middleware($manage);
+    })->middleware('mz');
 
     // ---- admin: attendance (?date=YYYY-MM-DD; default today's / latest) ----
     // The roster: HR / attendance viewers, and the occurrence's assigned taker.
@@ -166,11 +178,31 @@ Route::prefix('programs')->group(function () {
         $b = Ctx::body(Z::object(['date' => PS::isoDate()->optional(), 'user_id' => Z::number()->int()->positive(), 'reason' => Z::string()->trim()->max(500)->optional()]));
         return Http::ok(AttendanceSessions::assign(Ctx::actx(), $id, $b['date'] ?? null, $b['user_id'], $b['reason'] ?? null));
     })->middleware(['mz', 'mz:all,attendance.assign']);
-    // A member's signature on a mark (HR / reports).
+    // A member's signature on a mark (HR / reports / admin).
     Route::get('attendance/signatures/{attendanceId}', function () {
         $f = Attendance::signatureFile(Ctx::id('attendanceId'));
         return response()->file($f['abs'], ['Content-Type' => $f['mime'], 'Cache-Control' => 'private, no-store']);
-    })->middleware(['mz', 'mz:any,attendance.reports,attendance.override,attendance.correction.approve']);
+    })->middleware(['mz', 'mz:any,attendance.reports,attendance.override,attendance.correction.approve,attendance.view,attendance.manage,programs.manage']);
+
+    // Admin Attendance Management (History, Overview, Export, Year/Month Analytics)
+    Route::middleware(['mz', 'mz:any,attendance.reports,attendance.view,attendance.manage,programs.manage'])->prefix('attendance/admin')->group(function () {
+        Route::get('overview', fn () => Http::ok(Attendance::adminOverview(Ctx::q())));
+        Route::get('yearly-summary', fn () => Http::ok(Attendance::yearlySummary(Ctx::q())));
+        Route::get('monthly-summary', fn () => Http::ok(Attendance::monthlySummary(Ctx::q())));
+        Route::get('by-program', fn () => Http::ok(Attendance::byProgram(Ctx::q())));
+        Route::get('members/search', fn () => Http::ok(Attendance::searchMembers(Ctx::q('q'))));
+        Route::get('member/{userId}', fn () => Http::ok(Attendance::adminMemberProfile(Ctx::id('userId'), (int) (Ctx::q('year') ?? 0))));
+        Route::get('records', function () {
+            $q = Ctx::q();
+            $page = [
+                'page' => max(1, (int) ($q['page'] ?? 1)),
+                'limit' => min(100, max(1, (int) ($q['limit'] ?? $q['per_page'] ?? 25))),
+            ];
+            $page['offset'] = ($page['page'] - 1) * $page['limit'];
+            return Http::page(Attendance::adminRecords($q, $page));
+        });
+        Route::get('export', fn () => Http::ok(Attendance::adminExport(Ctx::q())));
+    });
     // Step 1 of taking attendance: identify the member (QR uuid or manual pick) and check they may be
     // recorded here; nothing is written. Step 2 is PUT {id}/attendance/{userId}.
     Route::get('{id}/attendance/check', function () {

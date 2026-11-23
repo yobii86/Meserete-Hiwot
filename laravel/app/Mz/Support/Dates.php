@@ -91,6 +91,11 @@ final class Dates
         return $x?->jsonSerialize();
     }
 
+    public static function toIso(mixed $d): ?string
+    {
+        return self::iso($d);
+    }
+
     public static function addDays(string $date, int $n): string
     {
         return (new DateTimeImmutable($date . ' 00:00:00', self::utc()))->modify(($n >= 0 ? '+' : '') . $n . ' day')->format('Y-m-d');

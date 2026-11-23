@@ -319,6 +319,7 @@ class AppTopBar extends ConsumerWidget {
                     const SizedBox(width: 8),
                     if (inModule) ...[
                       Container(
+                        key: const ValueKey('edu-back-button'),
                         padding: const EdgeInsets.symmetric(
                           horizontal: 7,
                           vertical: 3,
@@ -413,7 +414,15 @@ class AppTopBar extends ConsumerWidget {
                 child: const Icon(Icons.notifications_none_rounded, size: 20),
               ),
             ),
-            const ThemeToggleButton(compact: true),
+            IconButton(
+              key: const ValueKey('global-hamburger-menu'),
+              tooltip: l.isEn ? 'Menu' : 'ምናሌ',
+              visualDensity: VisualDensity.compact,
+              constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+              padding: const EdgeInsets.all(6),
+              icon: const Icon(Icons.menu_rounded, size: 24),
+              onPressed: () => Scaffold.of(context).openEndDrawer(),
+            ),
           ],
         ),
       ),
@@ -434,9 +443,11 @@ class NavLayout {
   final int branch; // current shell branch (0 = Home)
   final String location;
 
+  static const eduClasses = '/edu/classes';
   static const eduLibrary = '/edu/library';
   static const eduTabs = [
     '/edu',
+    '/edu/classes',
     '/edu/library',
     '/edu/progress',
     '/settings?from=edu',
@@ -447,12 +458,15 @@ class NavLayout {
   bool get onCategories =>
       hasCategories && branch == 0 && location.startsWith('/home/categories');
 
-  /// The ትምህርት tab a page belongs to (0: Learn, 1: Books, 2: Progress, 3: Settings).
+  /// The ትምህርት tab a page belongs to (0: Learn, 1: Classes, 2: Books, 3: Progress, 4: Settings).
   int get eduIndex {
-    if (branch == 3 || location.startsWith('/settings')) return 3;
+    if (branch == 3 || location.startsWith('/settings')) return 4;
     bool any(List<String> prefixes) => prefixes.any(location.startsWith);
-    if (any(const ['/edu/progress', '/edu/quiz/', '/edu/attempt/'])) return 2;
+    if (any(const ['/edu/progress', '/edu/quiz/', '/edu/attempt/'])) return 3;
     if (any(const ['/edu/library', '/edu/borrowings', '/library/books'])) {
+      return 2;
+    }
+    if (any(const ['/edu/classes', '/edu/class/', '/edu/course/', '/edu/learn/lesson/'])) {
       return 1;
     }
     return 0;

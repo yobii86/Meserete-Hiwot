@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_timezone/flutter_timezone.dart';
@@ -186,6 +187,11 @@ class LocalNotifications {
   /// Dismiss and clear saved alarm metadata.
   static Future<void> dismissAlarm(int id) async {
     try {
+      const nativeAlarm = MethodChannel('mezmur/alarm');
+      await nativeAlarm.invokeMethod('stopAlarm');
+      await nativeAlarm.invokeMethod('cancelAlarm', {'id': id});
+    } catch (_) {}
+    try {
       final prefs = await SharedPreferences.getInstance();
       await prefs.remove('alarm_text:$id');
     } catch (_) {}
@@ -195,6 +201,15 @@ class LocalNotifications {
 
   /// Re-ring an alarm [snoozeMinutes] later (its text and labels were saved when it was set).
   static Future<void> snoozeAlarm(int id, String? payload) async {
+    try {
+      const nativeAlarm = MethodChannel('mezmur/alarm');
+      await nativeAlarm.invokeMethod('snoozeAlarm', {
+        'id': id,
+        'payload': payload ?? 'alarm:0',
+        'title': 'የመርሐ ግብር ማንቂያ',
+        'body': '',
+      });
+    } catch (_) {}
     final prefs = await SharedPreferences.getInstance();
     final saved = prefs.getString('alarm_text:$id');
     if (saved == null) return;
@@ -330,6 +345,19 @@ class LocalNotifications {
         wanted.add(id);
         final body = [p.title, describe(alarm.offset), if (p.location != null) p.location!].join(' · ');
         try {
+          // Native Android exact alarm with WakeLock & Looping AlarmService
+          const nativeAlarm = MethodChannel('mezmur/alarm');
+          await nativeAlarm.invokeMethod('scheduleAlarm', {
+            'id': id,
+            'timestampMs': alarm.at.millisecondsSinceEpoch,
+            'programId': p.id,
+            'title': title,
+            'body': body,
+            'payload': 'alarm:${p.id}',
+          });
+        } catch (_) {}
+
+        try {
           // Kept on the phone so Snooze can re-ring it without the app or a connection.
           await prefs.setString('alarm_text:$id', jsonEncode({'title': title, 'body': body, 'channel': channelName, 'snooze': snooze, 'dismiss': dismiss}));
           await plugin.zonedSchedule(
@@ -349,6 +377,10 @@ class LocalNotifications {
     for (final r in await plugin.pendingNotificationRequests()) {
       // Snoozed alarms (their own id range) ring once more and are left alone.
       if (r.id >= _programAlarmBase && r.id < _snoozeBase && !wanted.contains(r.id)) {
+        try {
+          const nativeAlarm = MethodChannel('mezmur/alarm');
+          await nativeAlarm.invokeMethod('cancelAlarm', {'id': r.id});
+        } catch (_) {}
         await plugin.cancel(id: r.id);
         await prefs.remove('alarm_text:${r.id}');
       }

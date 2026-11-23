@@ -9,6 +9,7 @@ import 'package:mezmur_zelideta/core/network/api_client.dart';
 import 'package:mezmur_zelideta/core/storage/secure_store.dart';
 import 'package:mezmur_zelideta/core/theme/app_theme.dart';
 import 'package:mezmur_zelideta/features/auth/session.dart';
+import 'package:mezmur_zelideta/features/edu/edu_screens.dart';
 import 'package:mezmur_zelideta/features/edu/learn/edu_home.dart';
 import 'package:mezmur_zelideta/features/edu/learn/edu_widgets.dart';
 import 'package:mezmur_zelideta/features/edu/learn/learn_screens.dart';
@@ -135,7 +136,13 @@ void main() {
       expect(find.text('Lesson 1 of 12'), findsOneWidget);
       expect(find.text('The Apostolic Church'), findsOneWidget);
       expect(find.text('40% completed'), findsOneWidget);
-      // Canonical 7 Amharic subjects
+      expect(find.text('Weekly quizzes'), findsOneWidget);
+      expect(find.text('Essay on Nicaea'), findsOneWidget);
+      expect(find.text('Education administration'), findsNothing);
+
+      // Full curriculum categories are housed in the dedicated Class destination
+      await tester.pumpWidget(_app(const EduClassesScreen(), api));
+      await tester.pumpAndSettle();
       for (final c in [
         'ትምህርተ ሃይማኖት',
         'የመጽሐፍ ቅዱስ ጥናት',
@@ -148,9 +155,6 @@ void main() {
         expect(find.text(c), findsWidgets);
       }
       expect(find.text('12 Grades'), findsWidgets);
-      expect(find.text('Weekly quizzes'), findsOneWidget);
-      expect(find.text('Essay on Nicaea'), findsOneWidget);
-      expect(find.text('Education administration'), findsNothing);
     });
 
     testWidgets('a new member is guided to registration, without quizzes or fake numbers', (tester) async {
@@ -173,10 +177,20 @@ void main() {
       await tester.pumpWidget(_app(const EduHomeScreen(), api));
       await tester.pumpAndSettle();
 
+      await tester.scrollUntilVisible(
+        find.textContaining('You are not enrolled in a class yet'),
+        500,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
       expect(find.textContaining('You are not enrolled in a class yet. 2 class(es)'), findsOneWidget);
       expect(find.text('Weekly quizzes'), findsNothing);
       expect(find.text('Continue learning'), findsNothing);
       expect(find.byType(FeaturedCarousel), findsNothing);
+
+      // Verify Class destination also houses categories
+      await tester.pumpWidget(_app(const EduClassesScreen(), api));
+      await tester.pumpAndSettle();
       expect(find.text('ትምህርተ ሃይማኖት'), findsWidgets);
     });
   });

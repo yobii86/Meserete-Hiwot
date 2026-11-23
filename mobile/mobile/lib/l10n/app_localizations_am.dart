@@ -171,7 +171,8 @@ class AppLocalizationsAm extends AppLocalizations {
   String get errorNetwork => 'የኢንተርኔት ግንኙነት የለም። እባክዎ ግንኙነትዎን ያረጋግጡ።';
 
   @override
-  String get errorTimeout => 'ምላሽ ለማግኘት ጊዜው አልፏል። እባክዎ እንደገና ይሞክሩ።';
+  String get errorTimeout =>
+      'ምላሽ ለማግኘት ጊዜው አልፏል። እባክዎ የኢንተርኔት  ግንኙነት ያረጋግጡና እንደገና ይሞክሩ።';
 
   @override
   String get errorUnauthorized => 'እባክዎ እንደገና ይግቡ።';

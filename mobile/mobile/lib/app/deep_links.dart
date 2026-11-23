@@ -64,8 +64,12 @@ String routeForEntity(
         '/settings/attendance-calendar',
       'choir' => '/settings/me',
       'payment' || 'receipt' || 'payment_receipt' || 'contribution' => '/settings/payments',
+      'contribution_receipt' => (data?['admin_review'] == false || data?['target'] == 'member')
+          ? '/settings/payments'
+          : '/admin/receipt-review',
       'sinksar' || 'holy_day' => '/sinksar',
       'edu' || 'education' => '/edu',
+      'edu_magazine' || 'magazine' => '/edu/magazines',
       'edu_class' || 'edu_promotion' || 'edu_course' => '/edu/classes',
       'edu_assignment' => '/edu/assignments',
       'edu_announcement' => '/edu/announcements',
@@ -107,6 +111,9 @@ String routeForEntity(
 
     // Finance & Contributions
     'payment' || 'receipt' || 'payment_receipt' || 'contribution' => '/settings/payments',
+    'contribution_receipt' => (data?['admin_review'] == false || data?['target'] == 'member')
+        ? '/settings/payments'
+        : '/admin/receipt-review?id=$id',
 
     // Projects & Tasks
     'project' => '/projects/$id',
@@ -119,6 +126,7 @@ String routeForEntity(
     'library_request' => '/library-request/$id',
 
     // Education
+    'edu_magazine' || 'magazine' => '/edu/magazine/$id',
     'edu_class' || 'edu_promotion' => '/edu/classes',
     'edu_lesson' => '/edu/learn/lesson/$id',
     'edu_quiz' || 'edu_submission' => '/edu/quiz/$id',

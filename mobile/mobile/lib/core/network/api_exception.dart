@@ -1,7 +1,7 @@
 /// A failed API call, normalised from the backend envelope `{ success, code, message, errors[] }`
 /// or from a transport failure. `code` is stable and is translated in `core/l10n/error_text.dart`.
 class ApiException implements Exception {
-  const ApiException({required this.code, this.status, this.message, this.fieldErrors = const {}, this.serverData});
+  const ApiException({required this.code, this.status, this.message, this.fieldErrors = const {}, this.fieldMessages = const {}, this.serverData});
 
   /// Transport-level codes (not produced by the backend).
   static const network = 'NETWORK_ERROR';
@@ -15,6 +15,9 @@ class ApiException implements Exception {
 
   /// field name → validation code (e.g. `phone` → `INVALID_PHONE`).
   final Map<String, String> fieldErrors;
+
+  /// field name → validation message (e.g. `phone` → `Phone number is required`).
+  final Map<String, String> fieldMessages;
 
   /// Extra payload (e.g. the server copy on a sync conflict).
   final Object? serverData;

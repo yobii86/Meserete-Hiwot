@@ -43,7 +43,7 @@ import '../../core/member_groups.dart';
 Future<Program?> pickProgram(BuildContext context) => Navigator.of(context).push<Program>(MaterialPageRoute(builder: (_) => const _ProgramPicker()));
 
 /// "Add new" from another editor (banner, page …): create a program and get it back.
-Future<Program?> createProgram(BuildContext context) => Navigator.of(context).push<Program>(MaterialPageRoute(builder: (_) => const ProgramEditorScreen(returnOnSave: true)));
+Future<Program?> createProgram(BuildContext context, {DateTime? initialDate}) => Navigator.of(context).push<Program>(MaterialPageRoute(builder: (_) => ProgramEditorScreen(returnOnSave: true, initialDate: initialDate)));
 
 class _ProgramPicker extends ConsumerStatefulWidget {
   const _ProgramPicker();
@@ -115,7 +115,7 @@ class _ProgramsAdminScreenState extends ConsumerState<ProgramsAdminScreen> {
         IconButton(
           icon: const Icon(Icons.calendar_month_rounded),
           tooltip: 'የቀን መቁጠሪያ (Calendar)',
-          onPressed: () => context.push('/programs/calendar'),
+          onPressed: () => context.push('/admin/programs/calendar'),
         ),
         const ContextualHelpButton(screenRoute: '/admin/programs'),
         ReportExportButton(kind: 'programs', filters: () => {'status': _status, 'q': _q.isEmpty ? null : _q}),
@@ -190,8 +190,9 @@ class _ProgramsAdminScreenState extends ConsumerState<ProgramsAdminScreen> {
 }
 
 class ProgramEditorScreen extends ConsumerStatefulWidget {
-  const ProgramEditorScreen({super.key, this.programId, this.returnOnSave = false});
+  const ProgramEditorScreen({super.key, this.programId, this.returnOnSave = false, this.initialDate});
   final int? programId;
+  final DateTime? initialDate;
 
   /// Opened from another editor's "add new": close after the first save and hand the program back.
   final bool returnOnSave;
@@ -227,11 +228,14 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
   bool _countsForSelection = true;
   bool _isEducation = false;
   Set<int> _classIds = {};
+  Set<int> _courseIds = {};
   int? _scheduleId;
   int? _academicYearId;
   String _sessionType = 'individual'; // individual | shared
   bool _overlapConfirmed = false;
   String _monthlyRule = 'day_of_month'; // day_of_month | nth_weekday
+  Set<int> _selectedOrdinalWeeks = {1, 3};
+  Set<int> _selectedRecurringWeekdays = {};
   DateTime? _until;
   Set<String> _groups = {}; // empty = everyone
   bool _saving = false;
@@ -274,6 +278,7 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
     'counts': _countsForSelection,
     'is_education': _isEducation,
     'class_ids': _classIds.toList(),
+    'course_ids': _courseIds.toList(),
     'schedule_id': _scheduleId,
     'academic_year_id': _academicYearId,
     'session_type': _sessionType,
@@ -309,6 +314,7 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
     _countsForSelection = d['counts'] == null || asBool(d['counts']);
     _isEducation = asBool(d['is_education']);
     if (d['class_ids'] != null) _classIds = asValues(d['class_ids'], (e) => asIntOr(e)).toSet();
+    if (d['course_ids'] != null) _courseIds = asValues(d['course_ids'], (e) => asIntOr(e)).toSet();
     _scheduleId = asInt(d['schedule_id']);
     _academicYearId = asInt(d['academic_year_id']);
     _sessionType = asStr(d['session_type']) ?? 'individual';
@@ -356,6 +362,11 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
     if (widget.programId != null) {
       _load(widget.programId!);
     } else {
+      if (widget.initialDate != null) {
+        final d = widget.initialDate!;
+        _starts = DateTime(d.year, d.month, d.day, 9, 0);
+        _ends = DateTime(d.year, d.month, d.day, 11, 0);
+      }
       _checkDraft();
     }
   }
@@ -399,6 +410,8 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
     _categoryId = p.category?.id;
     _recurrence = p.recurrence;
     _monthlyRule = p.monthlyRule ?? 'day_of_month';
+    _selectedOrdinalWeeks = p.ordinalWeeks.isNotEmpty ? p.ordinalWeeks.toSet() : {1, 3};
+    _selectedRecurringWeekdays = p.recurringWeekdays.toSet();
     _until = p.recurrenceUntil;
     _groups = p.memberGroups.toSet();
     if (p.ethiopianDays.isNotEmpty) _ethDays = p.ethiopianDays.toSet();
@@ -407,7 +420,8 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
     _isMandatoryReminder = p.isMandatoryReminder;
     _intervalDays = p.reminderIntervalDays;
     _intervalStart = p.reminderIntervalStart;
-    _isEducation = p.isEducation || p.classIds.isNotEmpty || p.scheduleId != null;
+    final catIsEdu = p.category?.isEducation ?? false;
+    _isEducation = catIsEdu || p.isEducation || p.classIds.isNotEmpty || p.scheduleId != null;
     _classIds = p.classIds.toSet();
     _scheduleId = p.scheduleId;
     _sessionType = p.classIds.length > 1 ? 'shared' : 'individual';
@@ -418,6 +432,13 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
     if (!_form.currentState!.validate() || (_hasEnd && !_ends.isAfter(_starts)) || untilBad) {
       setState(() {});
       showSnack(context, context.l10n.checkFields);
+      return;
+    }
+
+    if (_isEducation && _classIds.isEmpty && _scheduleId == null) {
+      setState(() {});
+      final isEn = Localizations.localeOf(context).languageCode == 'en';
+      showSnack(context, isEn ? 'Please select at least one active class for this Education program' : 'እባክዎ የሚሳተፈውን የትምህርት ክፍል ይምረጡ');
       return;
     }
 
@@ -540,6 +561,85 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
     }
   }
 
+  Future<void> _previewSchedule() async {
+    final l = context.l10n;
+    final isEn = l.isEn;
+    final body = _body();
+    final res = await runWithProgress(
+      context,
+      () => ref.read(adminRepositoryProvider).previewSchedule(body),
+    );
+    if (res == null || !mounted) return;
+    final occs = asJsonList(res['occurrences']);
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      useRootNavigator: true,
+      builder: (ctx) {
+        final p = ctx.palette;
+        return DraggableScrollableSheet(
+          expand: false,
+          initialChildSize: 0.65,
+          maxChildSize: 0.9,
+          minChildSize: 0.4,
+          builder: (ctx, scroll) => Column(
+            children: [
+              Container(
+                margin: const EdgeInsets.only(top: 10, bottom: 8),
+                width: 36,
+                height: 4,
+                decoration: BoxDecoration(color: p.border, borderRadius: BorderRadius.circular(2)),
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                child: Row(
+                  children: [
+                    const Icon(Icons.event_available_rounded, color: AppColors.maroon, size: 22),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        isEn ? 'Schedule Preview (${occs.length} dates)' : 'የመርሐ ግብር ቀናት ቅድመ ዕይታ (${occs.length} ቀናት)',
+                        style: ctx.serif(16, weight: FontWeight.w700),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Divider(height: 1),
+              Expanded(
+                child: occs.isEmpty
+                    ? Center(child: Text(isEn ? 'No occurrences generated' : 'ምንም የተፈጠረ ቀን የለም'))
+                    : ListView.separated(
+                        controller: scroll,
+                        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                        itemCount: occs.length,
+                        separatorBuilder: (context, index) => const Divider(height: 1),
+                        itemBuilder: (ctx, idx) {
+                          final o = occs[idx];
+                          final greg = asStr(o['date']) ?? '';
+                          final eth = asStr(o['ethiopian_date']) ?? '';
+                          final wd = asStr(o['weekday_en']) ?? '';
+                          return ListTile(
+                            dense: true,
+                            contentPadding: EdgeInsets.zero,
+                            leading: CircleAvatar(
+                              radius: 14,
+                              backgroundColor: AppColors.gold.withValues(alpha: 0.15),
+                              child: Text('${idx + 1}', style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppColors.goldDark)),
+                            ),
+                            title: Text(eth.isNotEmpty ? eth : greg, style: ctx.sans(13.5, weight: FontWeight.w600)),
+                            subtitle: Text('$greg ($wd)', style: ctx.sans(12, color: p.muted)),
+                          );
+                        },
+                      ),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
   Json _body() {
     String? opt(TextEditingController c) => c.text.trim().isEmpty ? null : c.text.trim();
     return {
@@ -567,13 +667,16 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
       'category_id': ?_categoryId,
       'recurrence': _recurrence,
       'monthly_rule': _recurrence == 'monthly' || _recurrence == 'twice_monthly' ? _monthlyRule : null,
+      'ordinal_weeks': (_recurrence == 'monthly' || _recurrence == 'twice_monthly') && _monthlyRule == 'nth_weekday' ? (_selectedOrdinalWeeks.toList()..sort()) : null,
+      'recurring_weekdays': (_recurrence == 'monthly' || _recurrence == 'twice_monthly') && _monthlyRule == 'nth_weekday' && _selectedRecurringWeekdays.isNotEmpty ? (_selectedRecurringWeekdays.toList()..sort()) : null,
       'recurrence_until': _recurrence == 'once' || _until == null ? null : Formatters.isoDate(_until!),
       'member_groups': _groups.toList(),
       'ethiopian_days': _recurrence == 'ethiopian_days' ? (_ethDays.toList()..sort()) : null,
       'is_additional': _additional,
       'counts_for_selection': _countsForSelection,
       'class_ids': _isEducation ? _classIds.toList() : [],
-      'schedule_id': _scheduleId,
+      'course_ids': _isEducation ? _courseIds.toList() : [],
+      'schedule_id': _isEducation ? _scheduleId : null,
     };
   }
 
@@ -581,6 +684,7 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
   Widget build(BuildContext context) {
     final l = context.l10n;
     final v = Validators(l);
+    final f = Formatters(l, Localizations.localeOf(context).languageCode);
     final repo = ref.read(adminRepositoryProvider);
     if (!_loading) WidgetsBinding.instance.addPostFrameCallback((_) => _draft.changed(_snapshot()));
     return PopScope(
@@ -630,7 +734,19 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                                     ]),
                                   ),
                               ],
-                              onChanged: (x) => setState(() => _categoryId = x),
+                              onChanged: (x) {
+                                final selectedCat = cats.cast<ProgramCategory?>().firstWhere((c) => c?.id == x, orElse: () => null);
+                                final isEdu = selectedCat?.isEducation ?? false;
+                                setState(() {
+                                  _categoryId = x;
+                                  _isEducation = isEdu;
+                                  if (!isEdu) {
+                                    _classIds.clear();
+                                    _courseIds.clear();
+                                    _scheduleId = null;
+                                  }
+                                });
+                              },
                             );
                           },
                         ),
@@ -701,7 +817,17 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                       decoration: InputDecoration(labelText: l.location),
                     ),
                     const SizedBox(height: 12),
-                    DateTimeField(label: l.startsAt, value: _starts, onChanged: (d) => setState(() => _starts = d ?? _starts)),
+                    DateTimeField(
+                      label: l.startsAt,
+                      value: _starts,
+                      onChanged: (d) => setState(() {
+                        _starts = d ?? _starts;
+                        if (_hasEnd) {
+                          _ends = DateTime(_starts.year, _starts.month, _starts.day, _ends.hour, _ends.minute);
+                          if (!_ends.isAfter(_starts)) _ends = _starts.add(const Duration(hours: 2));
+                        }
+                      }),
+                    ),
                     const SizedBox(height: 12),
                     // The end time is optional: some programs have no fixed end.
                     SwitchListTile(
@@ -716,11 +842,27 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                       }),
                     ),
                     if (_hasEnd)
-                      DateTimeField(
-                        label: l.endsAt,
-                        value: _ends,
-                        errorText: _ends.isAfter(_starts) ? null : l.vEndBeforeStart,
-                        onChanged: (d) => setState(() => _ends = d ?? _ends),
+                      InkWell(
+                        onTap: () async {
+                          final t = await showTimePicker(
+                            context: context,
+                            initialTime: TimeOfDay.fromDateTime(_ends),
+                          );
+                          if (t != null) {
+                            setState(() {
+                              _ends = DateTime(_starts.year, _starts.month, _starts.day, t.hour, t.minute);
+                            });
+                          }
+                        },
+                        borderRadius: BorderRadius.circular(16),
+                        child: InputDecorator(
+                          decoration: InputDecoration(
+                            labelText: l.isEn ? 'End Time (Same Day)' : 'የማብቂያ ሰዓት (በዕለቱ)',
+                            errorText: _ends.isAfter(_starts) ? null : l.vEndBeforeStart,
+                            suffixIcon: const Icon(Icons.access_time_rounded, color: AppColors.gold),
+                          ),
+                          child: Text(f.time(_ends), style: context.sans(14)),
+                        ),
                       ),
                     const SizedBox(height: 14),
                     Text(l.recurrence, style: context.sans(13, weight: FontWeight.w600)),
@@ -729,6 +871,7 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                       for (final (value, icon, label) in [
                         ('once', Icons.event_rounded, l.recurrenceOnce),
                         ('weekly', Icons.view_week_rounded, l.recurrenceWeekly),
+                        ('biweekly', Icons.date_range_rounded, l.isEn ? 'Bi-weekly' : 'በየሁለት ሳምንቱ'),
                         // 2 days a month, about two weeks apart.
                         ('twice_monthly', Icons.event_repeat_rounded, l.recurrenceTwiceMonthly),
                         ('monthly', Icons.calendar_month_rounded, l.recurrenceMonthly),
@@ -769,6 +912,70 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                           ],
                           onChanged: (x) => setState(() => _monthlyRule = x ?? 'day_of_month'),
                         ),
+                        if (_monthlyRule == 'nth_weekday') ...[
+                          const SizedBox(height: 10),
+                          Text(
+                            l.isEn ? 'Ordinal Weeks in Month (e.g. 1st & 3rd, 2nd & 4th):' : 'በወሩ ውስጥ የሚደገሙበት ሳምንታት (ለምሳሌ 1ኛ እና 3ኛ፣ 2ኛ እና 4ኛ)፦',
+                            style: context.sans(12.5, weight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 6),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 6,
+                            children: [
+                              for (final w in [1, 2, 3, 4, 5])
+                                FilterChip(
+                                  label: Text(l.isEn ? '${w}th week' : '$wኛ ሳምንት'),
+                                  selected: _selectedOrdinalWeeks.contains(w),
+                                  onSelected: (sel) => setState(() {
+                                    if (sel) {
+                                      _selectedOrdinalWeeks.add(w);
+                                    } else if (_selectedOrdinalWeeks.length > 1) {
+                                      _selectedOrdinalWeeks.remove(w);
+                                    }
+                                  }),
+                                ),
+                            ],
+                          ),
+                          const SizedBox(height: 10),
+                          Text(
+                            l.isEn ? 'Recurring Weekday (Empty = same as start date):' : 'የሚደገምበት ዕለት (ባዶ ከሆነ ከጀመረበት ዕለት ጋር አንድ)፦',
+                            style: context.sans(12.5, weight: FontWeight.w600),
+                          ),
+                          const SizedBox(height: 6),
+                          Wrap(
+                            spacing: 8,
+                            runSpacing: 6,
+                            children: [
+                              for (final (wd, nameEn, nameAm) in [
+                                (0, 'Sun', 'እሑድ'),
+                                (6, 'Sat', 'ቅዳሜ'),
+                                (5, 'Fri', 'ዓርብ'),
+                                (4, 'Thu', 'ሐሙስ'),
+                                (3, 'Wed', 'ረቡዕ'),
+                                (2, 'Tue', 'ማክሰኞ'),
+                                (1, 'Mon', 'ሰኞ'),
+                              ])
+                                FilterChip(
+                                  label: Text(l.isEn ? nameEn : nameAm),
+                                  selected: _selectedRecurringWeekdays.contains(wd),
+                                  onSelected: (sel) => setState(() {
+                                    if (sel) {
+                                      _selectedRecurringWeekdays.add(wd);
+                                    } else {
+                                      _selectedRecurringWeekdays.remove(wd);
+                                    }
+                                  }),
+                                ),
+                            ],
+                          ),
+                        ],
+                        const SizedBox(height: 10),
+                        OutlinedButton.icon(
+                          icon: const Icon(Icons.date_range_rounded, size: 18),
+                          label: Text(l.isEn ? 'Preview Schedule Dates' : 'የቀናት ቅድመ ዕይታ (Preview)'),
+                          onPressed: _previewSchedule,
+                        ),
                       ],
                       const SizedBox(height: 12),
                       DateTimeField(
@@ -799,16 +1006,38 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                     SwitchListTile(contentPadding: EdgeInsets.zero, title: Text(l.additionalSession), subtitle: Text(l.additionalSessionHint), value: _additional, onChanged: (x) => setState(() => _additional = x)),
                     if (_additional)
                       SwitchListTile(contentPadding: EdgeInsets.zero, title: Text(l.countsForSelection), subtitle: Text(l.countsForSelectionHint), value: _countsForSelection, onChanged: (x) => setState(() => _countsForSelection = x)),
-                    SwitchListTile(
-                      contentPadding: EdgeInsets.zero,
-                      secondary: const Icon(Icons.school_rounded, color: AppColors.maroon),
-                      title: const Text('የትምህርት ክፍል ፕሮግራም (Education Program)'),
-                      subtitle: const Text('የክፍል አባላት ብቻ መገኘት እንዲመዘገብላቸው ከክፍለ-ጊዜ መርሐግብር ጋር ያገናኙ'),
-                      value: _isEducation,
-                      onChanged: (x) => setState(() => _isEducation = x),
-                    ),
                     if (_isEducation) ...[
-                      const SizedBox(height: 6),
+                      Container(
+                        margin: const EdgeInsets.only(top: 8, bottom: 8),
+                        padding: const EdgeInsets.all(12),
+                        decoration: BoxDecoration(
+                          color: AppColors.maroon.withValues(alpha: 0.08),
+                          borderRadius: BorderRadius.circular(10),
+                          border: Border.all(color: AppColors.maroon.withValues(alpha: 0.3)),
+                        ),
+                        child: Row(
+                          children: [
+                            const Icon(Icons.school_rounded, color: AppColors.maroon, size: 24),
+                            const SizedBox(width: 10),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    'የትምህርት እና ሥልጠና መርሐግብር (Education Program)',
+                                    style: context.sans(13.5, weight: FontWeight.w700, color: AppColors.maroon),
+                                  ),
+                                  const SizedBox(height: 2),
+                                  Text(
+                                    'ይህ መርሐግብር ከተመረጠው የትምህርት ክፍልና ሥርዓተ-ትምህርት ጋር የተገናኘ ሲሆን፣ መገኘት የሚመዘገበው ለክፍሉ ተማሪዎች ብቻ ነው (በHR የሚመራ)።',
+                                    style: context.sans(11.5, color: context.palette.muted),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
                       // 1. Select Academic Year
                       FutureBuilder<List<Json>>(
                         future: ref.read(eduRepositoryProvider).academicYears(),
@@ -834,6 +1063,7 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                                 setState(() {
                                   _academicYearId = v;
                                   _classIds.clear();
+                                  _courseIds.clear();
                                   _scheduleId = null;
                                 });
                               },
@@ -891,6 +1121,7 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                               onChanged: (cid) {
                                 setState(() {
                                   _classIds = cid != null ? {cid} : {};
+                                  _courseIds.clear();
                                   _scheduleId = null;
                                 });
                               },
@@ -913,6 +1144,7 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                                       } else {
                                         _classIds.remove(cid);
                                       }
+                                      _courseIds.clear();
                                       _scheduleId = null;
                                     });
                                   },
@@ -922,6 +1154,38 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                         },
                       ),
                       const SizedBox(height: 12),
+
+                      // 4. Curriculum-backed Course / Subject
+                      if (_classIds.isNotEmpty) ...[
+                        Text('የትምህርት ዓይነት / ኮርስ (Curriculum Course/Subject)', style: context.sans(13, weight: FontWeight.w600)),
+                        const SizedBox(height: 4),
+                        FutureBuilder<List<Json>>(
+                          future: ref.read(eduRepositoryProvider).adminCourses(classId: _classIds.first),
+                          builder: (context, snap) {
+                            if (snap.connectionState == ConnectionState.waiting) return const LinearProgressIndicator();
+                            final courses = snap.data ?? [];
+                            if (courses.isEmpty) return Text('ለዚህ ክፍል የተመዘገበ ኮርስ የለም', style: context.sans(12, color: context.palette.muted));
+                            return DropdownButtonFormField<int?>(
+                              initialValue: _courseIds.isNotEmpty && courses.any((c) => asIntOr(c['id']) == _courseIds.first) ? _courseIds.first : null,
+                              decoration: const InputDecoration(labelText: 'የሥርዓተ-ትምህርት ኮርስ ይምረጡ'),
+                              items: [
+                                const DropdownMenuItem<int?>(value: null, child: Text('አጠቃላይ የክፍል መርሐግብር (ሁሉም ኮርሶች)')),
+                                for (final c in courses)
+                                  DropdownMenuItem<int?>(
+                                    value: asIntOr(c['id']),
+                                    child: Text(asStr(c['name']) ?? 'Course ${c['id']}'),
+                                  ),
+                              ],
+                              onChanged: (cId) {
+                                setState(() {
+                                  _courseIds = cId != null ? {cId} : {};
+                                });
+                              },
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 12),
+                      ],
 
                       // 4. Timetable Entries Picker & Auto-populate
                       if (_classIds.isNotEmpty) ...[
@@ -1055,25 +1319,53 @@ class _ProgramEditorScreenState extends ConsumerState<ProgramEditorScreen> {
                     // Every 15 calendar days while the program runs (stops when it is cancelled,
                     // completed or over); the start date defaults to the program start or today.
                     SwitchListTile(
-                      key: const ValueKey('program-interval-15'),
+                      key: const ValueKey('program-interval-daily'),
                       contentPadding: EdgeInsets.zero,
                       secondary: const Icon(Icons.event_repeat_rounded, color: AppColors.gold),
-                      title: Text(l.remindEvery15Days),
-                      subtitle: Text(l.remindEvery15DaysHint),
+                      title: Text(l.isEn ? 'Daily Recurring Reminder (Every 1 Day)' : 'በየቀኑ የሚላክ ማስታወሻ (በየ 1 ቀኑ)'),
+                      subtitle: Text(l.isEn
+                          ? 'Participants get a reminder every 1 day while the program runs. Turn OFF to stop.'
+                          : 'መርሐ ግብሩ እስኪያልቅ ድረስ ለተሳታፊዎች በየ 1 ቀኑ ማስታወሻ ይላካል፤ ሲጠፋ ይቆማል።'),
                       value: _intervalDays != null,
-                      onChanged: (x) => setState(() => _intervalDays = x ? 15 : null),
+                      onChanged: (x) => setState(() => _intervalDays = x ? 1 : null),
                     ),
-                    if (_intervalDays != null)
+                    if (_intervalDays != null) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 6),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                          decoration: BoxDecoration(
+                            color: AppColors.gold.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: AppColors.gold.withValues(alpha: 0.3)),
+                          ),
+                          child: Row(
+                            children: [
+                              const Icon(Icons.info_outline_rounded, size: 16, color: AppColors.goldDark),
+                              const SizedBox(width: 8),
+                              Expanded(
+                                child: Text(
+                                  l.isEn
+                                      ? 'Reminder Interval: $_intervalDays day(s) · Status: ${_reminder ? "Active (ON)" : "Disabled (OFF)"}'
+                                      : 'የማስታወሻ ድግግሞሽ፡ $_intervalDays ቀን · ሁኔታ፡ ${_reminder ? "በርቷል" : "ጠፍቷል"}',
+                                  style: context.sans(11.5, weight: FontWeight.w600, color: AppColors.goldDark),
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
                       Padding(
                         padding: const EdgeInsets.only(bottom: 8),
                         child: DateTimeField(
-                          label: l.remindEvery15DaysFrom,
+                          label: l.isEn ? 'Start reminding from (empty = program start or today)' : 'ማስታወሻ መላክ የሚጀምርበት ቀን (ባዶ ከሆነ ከዛሬ)',
                           value: _intervalStart,
                           withTime: false,
                           clearable: true,
                           onChanged: (d) => setState(() => _intervalStart = d),
                         ),
                       ),
+                    ],
                     if (_reminder) ...[
                       if (ref.watch(currentUserProvider)?.can('programs.reminders_enforce') ?? (ref.watch(currentUserProvider)?.isAdmin ?? false))
                         SwitchListTile(
@@ -1333,10 +1625,19 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
   bool get _pastEnd => _scheduledEnd != null && !_now.isBefore(_scheduledEnd!);
   bool get _running => _sStatus == 'active' && !_pastEnd;
   bool get _ended => _sStatus == 'ended' || _sStatus == 'cancelled' || (_sStatus == 'active' && _pastEnd);
-  bool get _canMark => _isTaker && _running;
-  bool get _canStart => _isTaker && _sStatus == 'scheduled' && _availableFrom != null && !_now.isBefore(_availableFrom!) && !_pastEnd;
+  bool get _canMark => !_isPast && _isTaker && _running && !_isSuspended;
+  bool get _canStart => _isTaker && _sStatus == 'scheduled' && _availableFrom != null && !_now.isBefore(_availableFrom!) && !_pastEnd && !_isSuspended;
   bool get _canEnd => _running && (_isTaker || (ref.read(currentUserProvider)?.can(Perm.attendanceClose) ?? false));
   bool get _canAssign => (ref.read(currentUserProvider)?.can(Perm.attendanceAssign) ?? false) && !_ended;
+  bool get _isPast {
+    if (_occurrence['active'] == true || _sStatus == 'active') return false;
+    final d = _occDate;
+    if (d == null) return false;
+    final now = _now;
+    final todayStr = '${now.year.toString().padLeft(4, '0')}-${now.month.toString().padLeft(2, '0')}-${now.day.toString().padLeft(2, '0')}';
+    return d.compareTo(todayStr) < 0;
+  }
+  bool get _canSuspend => !_isPast && (((ref.read(currentUserProvider)?.canAny([Perm.programsManage, Perm.attendanceManage]) ?? false) || _isTaker));
 
   /// The roster page with the session worked out (server copy, the phone's offline Start / End,
   /// clock skew) and marks still waiting in the offline queue shown on top.
@@ -1484,12 +1785,55 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
     if (r != null) await _ctrl.refresh();
   }
 
+  bool get _isSuspended => asStr(_occurrence['status']) == 'suspended' || _occurrence['suspended'] == true;
+
+  Future<void> _toggleSuspend() async {
+    final l = context.l10n;
+    final date = _occDate;
+    if (date == null) return;
+    if (_isPast) {
+      showSnack(context, l.isEn ? 'Past program occurrences cannot be suspended.' : 'ያለፈ የፕሮግራም ቀን ሊታገድ አይችልም።');
+      return;
+    }
+    final isSus = _isSuspended;
+    if (isSus) {
+      if (!await showConfirm(context, l.isEn ? 'Restore program occurrence for $date?' : '$date ላይ የተዘጋውን ፕሮግራም መልሰው መክፈት ይፈልጋሉ?') || !mounted) return;
+      final res = await runWithProgress(
+        context,
+        () => ref.read(adminRepositoryProvider).updateOccurrence(widget.programId, date, {'action': 'restore'}),
+        success: l.isEn ? 'Program occurrence restored successfully.' : 'የዕለቱ ፕሮግራም በተሳካ ሁኔታ ተመልሷል።',
+      );
+      if (res != null && mounted) {
+        await _ctrl.refresh();
+      }
+    } else {
+      final reason = await promptText(context, title: l.isEn ? 'Suspend Program for Today' : 'የዕለቱን ፕሮግራም አግድ', label: l.reason, required: true);
+      if (reason == null || reason.trim().isEmpty || !mounted) return;
+      final res = await runWithProgress(
+        context,
+        () => ref.read(adminRepositoryProvider).updateOccurrence(widget.programId, date, {'action': 'suspended', 'reason': reason.trim()}),
+        success: l.isEn ? 'Program occurrence suspended successfully for today.' : 'የዕለቱ ፕሮግራም ለዛሬ በተሳካ ሁኔታ ታግዷል።',
+      );
+      if (res != null && mounted) {
+        await _ctrl.refresh();
+      }
+    }
+  }
+
   // ---------------------------------------------------------------- recording
 
   /// Attended: the member signs first (unless their group is exempt) — nothing is recorded without
   /// it. Goes through the offline queue (never lost, never doubled).
   Future<void> _recordPresent({required int uid, required String name, String? group, required String via, String? date}) async {
     final l = context.l10n;
+    if (_isPast) {
+      showSnack(context, l.isEn ? 'Past program occurrence: attendance recording is locked.' : 'ያለፈ የፕሮግራም ቀን በመሆኑ አቴንዳንስ መመዝገብ ተዘግቷል።');
+      return;
+    }
+    if (_isSuspended) {
+      showSnack(context, l.isEn ? 'This program occurrence is suspended for today.' : 'የዕለቱ መርሐ ግብር ለዛሬ ታግዷል። መገኘት መመዝገብ አይቻልም።');
+      return;
+    }
     date ??= _occDate;
     if (date == null) return;
     String? signature;
@@ -1516,6 +1860,14 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
 
   Future<void> _mark(Json row, String status) async {
     final l = context.l10n;
+    if (_isPast) {
+      showSnack(context, l.isEn ? 'Past program occurrence: attendance recording is locked.' : 'ያለፈ የፕሮግራም ቀን በመሆኑ አቴንዳንስ መመዝገብ ተዘግቷል።');
+      return;
+    }
+    if (_isSuspended) {
+      showSnack(context, l.isEn ? 'This program occurrence is suspended for today.' : 'የዕለቱ መርሐ ግብር ለዛሬ ታግዷል። መገኘት መመዝገብ አይቻልም።');
+      return;
+    }
     final uid = asIntOr(row['user_id']);
     final date = _occDate;
     if (date == null) return;
@@ -1601,6 +1953,15 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
   /// checked, the taker verifies the person, the member signs, then it is recorded at that moment.
   /// Works offline from the member list kept on the phone; records then sync when back online.
   Future<void> _scan() async {
+    final l = context.l10n;
+    if (_isPast) {
+      showSnack(context, l.isEn ? 'Past program occurrence: attendance recording is locked.' : 'ያለፈ የፕሮግራም ቀን በመሆኑ አቴንዳንስ መመዝገብ ተዘግቷል።');
+      return;
+    }
+    if (_isSuspended) {
+      showSnack(context, l.isEn ? 'This program occurrence is suspended for today.' : 'የዕለቱ መርሐ ግብር ለዛሬ ታግዷል። መገኘት መመዝገብ አይቻልም።');
+      return;
+    }
     for (;;) {
       if (!mounted) return;
       final uuid = await scanMemberQr(context);
@@ -1611,6 +1972,11 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
 
   /// Members without a smartphone: search by name / member ID, verify, sign, record (manual).
   Future<void> _findMember() async {
+    final l = context.l10n;
+    if (_isPast) {
+      showSnack(context, l.isEn ? 'Past program occurrence: attendance recording is locked.' : 'ያለፈ የፕሮግራም ቀን በመሆኑ አቴንዳንስ መመዝገብ ተዘግቷል።');
+      return;
+    }
     final uid = await findMemberForAttendance(context, programId: widget.programId);
     if (uid == null || !mounted) return;
     await _verifyAndRecord(userId: uid, via: 'manual');
@@ -1670,6 +2036,45 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
               ]),
             ),
           ),
+          if (_isPast)
+            Container(
+              margin: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.danger.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppColors.danger.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                children: [
+                  const Icon(Icons.lock_clock_rounded, color: AppColors.danger, size: 22),
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Text(
+                      l.isEn ? 'Past program occurrence: attendance recording is locked.' : 'ያለፈ የፕሮግራም ቀን በመሆኑ አቴንዳንስ መመዝገብ ተዘግቷል።',
+                      style: context.sans(12.5, weight: FontWeight.w600, color: AppColors.danger),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          if (canMark)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: FilledButton.icon(
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.maroon,
+                  minimumSize: const Size.fromHeight(44),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
+                ),
+                icon: const Icon(Icons.qr_code_scanner_rounded, size: 20, color: Colors.white),
+                label: Text(
+                  l.isEn ? 'Scan Member QR Code' : 'የአባል QR ኮድ አንብብ',
+                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 13, color: Colors.white),
+                ),
+                onPressed: _scan,
+              ),
+            ),
           if (_session != null || _occurrence.isNotEmpty) _sessionCard(context, f),
           if (!online) _Notice(icon: Icons.cloud_off_rounded, text: l.attendanceOfflineNote),
           Padding(
@@ -1721,6 +2126,7 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
                 final capturedAt = DateTime.tryParse(asStr(r['attended_at']) ?? '')?.toLocal();
                 final elapsed = r['elapsed_seconds'] == null ? null : asIntOr(r['elapsed_seconds']);
                 return AppCard(
+                  onTap: () => _showMemberAttendanceDetail(r),
                   padding: const EdgeInsets.fromLTRB(4, 6, 10, 8),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1816,7 +2222,10 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
     final offlineStart = asStr(_session?['start_source']) == 'offline';
     String line;
     IconData icon;
-    if (_sStatus == 'cancelled') {
+    if (_isSuspended) {
+      icon = Icons.pause_circle_filled_rounded;
+      line = l.isEn ? 'Program occurrence suspended for today' : 'የዕለቱ መርሐ ግብር ለዛሬ ታግዷል';
+    } else if (_sStatus == 'cancelled') {
       icon = Icons.event_busy_rounded;
       line = l.attendanceNotOpen;
     } else if (_ended) {
@@ -1851,9 +2260,17 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
           const SizedBox(height: 6),
           if (start != null && end != null) Text(l.attSessionScheduled(f.time(start), f.time(end)), style: context.sans(12, color: p.muted)),
           Text(taker == null ? l.attNoTakerAssigned : l.attSessionTaker(taker), style: context.sans(12, color: taker == null ? AppColors.danger : p.muted)),
+          if (_isSuspended && asStr(_occurrence['reason']) != null && asStr(_occurrence['reason'])!.isNotEmpty)
+            Padding(
+              padding: const EdgeInsets.only(top: 4),
+              child: Text(
+                l.isEn ? 'Suspension reason: ${asStr(_occurrence['reason'])}' : 'የእግዱ ምክንያት፦ ${asStr(_occurrence['reason'])}',
+                style: context.sans(12, color: Colors.orange.shade800, weight: FontWeight.w600),
+              ),
+            ),
           if (offlineStart && _running) Text(l.attStartedOffline, style: context.sans(11, color: p.subtle)),
           if (!_isTaker && !_ended && _takerId != null) Text(l.attOnlyTakerRecords, style: context.sans(11, color: p.subtle)),
-          if (_canStart || _canEnd || _canAssign) const SizedBox(height: 8),
+          if (_canStart || _canEnd || _canAssign || _canSuspend) const SizedBox(height: 8),
           Wrap(spacing: 8, runSpacing: 6, children: [
             if (_canStart)
               FilledButton.icon(key: const ValueKey('att-start'), onPressed: _start, icon: const Icon(Icons.play_arrow_rounded), label: Text(l.attStart)),
@@ -1861,8 +2278,145 @@ class _AttendanceRosterScreenState extends ConsumerState<AttendanceRosterScreen>
               OutlinedButton.icon(key: const ValueKey('att-end'), onPressed: _end, icon: const Icon(Icons.stop_rounded), label: Text(l.attEnd)),
             if (_canAssign && online(ref))
               TextButton.icon(key: const ValueKey('att-assign'), onPressed: _assign, icon: const Icon(Icons.manage_accounts_rounded, size: 18), label: Text(l.attChangeTaker)),
+            if (_canSuspend && online(ref))
+              TextButton.icon(
+                key: const ValueKey('att-suspend'),
+                onPressed: _toggleSuspend,
+                icon: Icon(_isSuspended ? Icons.restore_rounded : Icons.pause_circle_outline_rounded, size: 18, color: Colors.orange),
+                label: Text(_isSuspended ? (l.isEn ? 'Restore Today' : 'የዛሬውን መልስ') : (l.isEn ? 'Suspend for Today' : 'የዛሬውን አግድ')),
+              ),
           ]),
         ]),
+      ),
+    );
+  }
+
+  void _showMemberAttendanceDetail(Json r) {
+    final l = context.l10n;
+    final f = Formatters(l, Localizations.localeOf(context).languageCode);
+    final p = context.palette;
+    final status = asStr(r['status']) ?? 'unmarked';
+    final capturedAt = DateTime.tryParse(asStr(r['attended_at']) ?? '')?.toLocal();
+    final via = asStr(r['via']);
+    final viaText = via == 'qr' ? (l.isEn ? 'QR Code Scan' : 'በ QR ኮድ የተመዘገበ') : (via == 'manual' ? (l.isEn ? 'Manual Entry' : 'በእጅ የተመዘገበ') : '—');
+    final sigUrl = asStr(r['signature_url']);
+    final isSigned = r['signed'] == true || sigUrl != null;
+    final dateStr = _occDate ?? asStr(_occurrence['date']) ?? '';
+
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      shape: const RoundedRectangleBorder(borderRadius: BorderRadius.vertical(top: Radius.circular(20))),
+      builder: (ctx) => SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Center(
+                child: Container(
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(color: p.muted.withValues(alpha: 0.3), borderRadius: BorderRadius.circular(2)),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text('${r['full_name']}', style: context.serif(18, weight: FontWeight.w700)),
+                        if (r['member_id'] != null)
+                          Text('${r['member_id']}', style: context.sans(13, color: p.muted)),
+                      ],
+                    ),
+                  ),
+                  Pill(attendanceLabel(context, status), color: attendanceColor(status)),
+                ],
+              ),
+              const Divider(height: 24),
+              _detailRow(l.isEn ? 'Date' : 'ቀን', dateStr, ctx),
+              _detailRow(l.isEn ? 'Method' : 'መንገድ', viaText, ctx),
+              if (capturedAt != null)
+                _detailRow(l.isEn ? 'Recorded At' : 'የተመዘገበበት ሰዓት', '${f.date(capturedAt)} ${f.time(capturedAt)}', ctx),
+              if (_takerName != null || r['recorded_by_name'] != null)
+                _detailRow(l.isEn ? 'Recorded By' : 'መዝጋቢ', asStr(r['recorded_by_name']) ?? _takerName ?? '—', ctx),
+              if (r['notes'] != null)
+                _detailRow(l.isEn ? 'Notes' : 'ማስታወሻ', '${r['notes']}', ctx),
+              const SizedBox(height: 12),
+              Text(l.isEn ? 'Signature' : 'ፊርማ', style: context.sans(13, weight: FontWeight.w700, color: p.text)),
+              const SizedBox(height: 6),
+              if (isSigned && sigUrl != null)
+                Container(
+                  height: 90,
+                  width: double.infinity,
+                  decoration: BoxDecoration(
+                    color: Colors.white,
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(color: p.muted.withValues(alpha: 0.3)),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(10),
+                    child: Image.network(
+                      sigUrl,
+                      fit: BoxFit.contain,
+                      errorBuilder: (context, error, stackTrace) => Center(
+                        child: Text(l.isEn ? 'Signature captured ✓' : 'ፊርማ ተመዝግቧል ✓', style: context.sans(12, color: AppColors.success)),
+                      ),
+                    ),
+                  ),
+                )
+              else if (isSigned)
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: AppColors.success.withValues(alpha: 0.1),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppColors.success.withValues(alpha: 0.3)),
+                  ),
+                  child: Row(
+                    children: [
+                      const Icon(Icons.draw_rounded, color: AppColors.success, size: 20),
+                      const SizedBox(width: 8),
+                      Text(l.isEn ? 'Member signature captured on device' : 'የአባሉ ፊርማ በመሣሪያው ላይ ተመዝግቧል', style: context.sans(12.5, color: AppColors.success, weight: FontWeight.w600)),
+                    ],
+                  ),
+                )
+              else
+                Container(
+                  padding: const EdgeInsets.all(12),
+                  decoration: BoxDecoration(
+                    color: p.muted.withValues(alpha: 0.08),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(Icons.edit_off_rounded, color: p.muted, size: 20),
+                      const SizedBox(width: 8),
+                      Text(l.isEn ? 'No signature recorded' : 'ፊርማ አልተመዘገበም', style: context.sans(12.5, color: p.muted)),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _detailRow(String label, String value, BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: context.sans(12.5, color: context.palette.muted)),
+          Text(value, style: context.sans(12.5, weight: FontWeight.w600)),
+        ],
       ),
     );
   }
@@ -1981,8 +2535,8 @@ class _SendNotificationScreenState extends ConsumerState<SendNotificationScreen>
   Widget build(BuildContext context) {
     final l = context.l10n;
     final v = Validators(l);
-    final me = ref.watch(currentUserProvider)!;
     final f = Formatters(l, Localizations.localeOf(context).languageCode);
+    final me = ref.watch(currentUserProvider)!;
     return DefaultTabController(
       length: 2,
       child: AdminScaffold(

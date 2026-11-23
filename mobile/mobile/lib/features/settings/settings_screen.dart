@@ -11,6 +11,7 @@ import '../../core/theme/app_colors.dart';
 import '../../core/theme/app_theme.dart';
 import '../../core/utils/formatters.dart';
 import '../../models/admin.dart';
+import '../../models/json.dart';
 import '../../models/user.dart';
 import '../../repositories/providers.dart';
 import '../../services/download_service.dart';
@@ -39,9 +40,155 @@ class SettingsScreen extends ConsumerWidget {
       return;
     }
     if (!await showConfirm(context, '${l.telegramHint}\n\n${l.telegramOpenBot}', title: l.telegramConnect, confirmLabel: l.telegramConnect) || !context.mounted) return;
-    final url = await runWithProgress(context, repo.telegramLink);
-    if (url == null || url.isEmpty) return;
-    await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    try {
+      final url = await runWithProgress(context, repo.telegramLink);
+      if (url == null || url.isEmpty) return;
+      await launchUrl(Uri.parse(url), mode: LaunchMode.externalApplication);
+    } catch (e) {
+      if (context.mounted) {
+        showInfo(
+          context,
+          l.isEn
+              ? 'The Telegram bot is currently not configured or unavailable on the server. Please check with an administrator.'
+              : 'የቴሌግራም ቦቱ በሰርቨሩ ላይ እስካሁን አልተዋቀረም ወይም አይገኝም። እባክዎ አስተዳዳሪውን ያነጋግሩ።',
+        );
+      }
+    }
+  }
+
+  /// Administrator diagnostic dialog to test Telegram Bot connection
+  Future<void> _showTelegramDiagnostic(BuildContext context, WidgetRef ref) async {
+    final l = context.l10n;
+    final isEn = l.isEn;
+    final adminRepo = ref.read(adminRepositoryProvider);
+
+    Json? diagResult;
+    String? testError;
+    var testing = false;
+
+    await showDialog<void>(
+      context: context,
+      builder: (ctx) => StatefulBuilder(
+        builder: (ctx, setS) {
+          Future<void> runTest() async {
+            setS(() {
+              testing = true;
+              testError = null;
+            });
+            try {
+              final res = await adminRepo.testTelegramConnection();
+              if (ctx.mounted) {
+                setS(() {
+                  diagResult = res;
+                  testing = false;
+                });
+              }
+            } catch (e) {
+              if (ctx.mounted) {
+                setS(() {
+                  testError = '$e';
+                  testing = false;
+                });
+              }
+            }
+          }
+
+          if (diagResult == null && !testing && testError == null) {
+            runTest();
+          }
+
+          final status = asStr(diagResult?['status']) ?? 'testing';
+          final botUsername = asStr(diagResult?['bot_username']);
+          final botName = asStr(diagResult?['bot_name']);
+          final message = asStr(diagResult?['message']);
+
+          final statusColor = switch (status) {
+            'connected' => Colors.green,
+            'not_configured' => Colors.orange,
+            _ => Colors.red,
+          };
+
+          final statusLabel = switch (status) {
+            'connected' => (isEn ? 'Connected' : 'ተገናኝቷል'),
+            'not_configured' => (isEn ? 'Not configured' : 'አልተዋቀረም'),
+            'invalid_token' => (isEn ? 'Invalid token' : 'ልክ ያልሆነ ቶከን'),
+            _ => (isEn ? 'Connection failed' : 'ግንኙነቱ አልተሳካም'),
+          };
+
+          return AlertDialog(
+            title: Row(
+              children: [
+                const Icon(Icons.send_rounded, color: AppColors.gold, size: 22),
+                const SizedBox(width: 8),
+                Text(isEn ? 'Telegram Bot Connection' : 'የቴሌግራም ቦት ግንኙነት'),
+              ],
+            ),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (testing)
+                  const Center(
+                    child: Padding(
+                      padding: EdgeInsets.symmetric(vertical: 20),
+                      child: CircularProgressIndicator(),
+                    ),
+                  )
+                else ...[
+                  Row(
+                    children: [
+                      Container(
+                        width: 10,
+                        height: 10,
+                        decoration: BoxDecoration(shape: BoxShape.circle, color: statusColor),
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        statusLabel,
+                        style: TextStyle(fontWeight: FontWeight.bold, color: statusColor, fontSize: 15),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  if (botUsername != null && botUsername.isNotEmpty) ...[
+                    Text(
+                      '${isEn ? "Bot Username:" : "የቦቱ መጠሪያ፦"} @$botUsername',
+                      style: const TextStyle(fontWeight: FontWeight.w600),
+                    ),
+                    if (botName != null) ...[
+                      const SizedBox(height: 4),
+                      Text('${isEn ? "Name:" : "ስም፦"} $botName'),
+                    ],
+                    const SizedBox(height: 8),
+                  ],
+                  if (message != null)
+                    Text(
+                      message,
+                      style: TextStyle(fontSize: 12, color: Theme.of(ctx).colorScheme.onSurface.withValues(alpha: 0.7)),
+                    ),
+                  if (testError != null)
+                    Text(
+                      testError!,
+                      style: const TextStyle(fontSize: 12, color: Colors.red),
+                    ),
+                ],
+              ],
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(ctx),
+                child: Text(l.cancel),
+              ),
+              FilledButton.icon(
+                icon: const Icon(Icons.refresh_rounded, size: 16),
+                label: Text(isEn ? 'Test Connection' : 'ግንኙነቱን ፈትሽ'),
+                onPressed: testing ? null : runTest,
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 
   @override
@@ -150,6 +297,13 @@ class SettingsScreen extends ConsumerWidget {
                   value: user.telegramLinked ? (user.telegramUsername != null ? '@${user.telegramUsername}' : l.telegramLinked) : l.telegramConnect,
                   onTap: () => _telegram(context, ref, user.telegramLinked),
                 ),
+                if (user.can(Perm.settingsManage) || user.accountType == 'admin')
+                  SettingsTile(
+                    key: const ValueKey('settings-telegram-diag'),
+                    icon: Icons.network_check_rounded,
+                    label: l.isEn ? 'Telegram Bot Diagnostic' : 'የቴሌግራም ቦት ምርመራ',
+                    onTap: () => _showTelegramDiagnostic(context, ref),
+                  ),
               ],
             ),
           ],

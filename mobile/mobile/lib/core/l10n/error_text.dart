@@ -126,6 +126,8 @@ String errorText(AppLocalizations l, Object error) {
       return l.errLoginNotAllowed;
     case 'PAYMENT_OVERLAP':
       return l.errPaymentOverlap;
+    case 'SUBMISSION_OVERLAP':
+      return l.localeName == 'am' ? 'ለዚህ ወር የተላከ ደረሰኝ በግምገማ ላይ ይገኛል' : 'A receipt submission for this period is already under review';
     case 'RATE_NOT_SET':
       return l.rateNotSet;
     case 'CHILDREN_EXEMPT':
@@ -268,9 +270,20 @@ String errorText(AppLocalizations l, Object error) {
       return l.errAlreadyTransferred;
     case 'VALIDATION_ERROR':
       // Surface the first field-level message if we can translate it.
-      for (final code in error.fieldErrors.values) {
-        final t = validationText(l, code);
-        if (t != null) return t;
+      for (final e in error.fieldErrors.entries) {
+        final t = validationText(l, e.value);
+        if (t != null) {
+          return t;
+        }
+      }
+      // If server provided explicit field messages, return the first one
+      if (error.fieldMessages.isNotEmpty) {
+        final first = error.fieldMessages.entries.first;
+        final f = first.key.isNotEmpty && first.key != 'body' ? '${first.key}: ' : '';
+        return '$f${first.value}';
+      }
+      if (error.message != null && error.message!.isNotEmpty && error.message != 'Validation failed') {
+        return error.message!;
       }
       return l.errorValidation;
   }

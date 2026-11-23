@@ -48,9 +48,14 @@ class StageRepository {
       _api.put('/programs/$programId/attendance/session/taker', body: {'date': ?date, 'user_id': userId, 'reason': ?reason}, parse: asJson);
 
   /// Offline attendance the server could not apply as captured (HR review queue).
-  Future<Paged<Json>> attendanceConflicts({String? status, int page = 1}) => _api.getPage('/attendance/sync-conflicts', (j) => j, page: page, query: {'status': status});
+  Future<Paged<Json>> attendanceConflicts({String? status, int? programId, String? batchId, int page = 1}) =>
+      _api.getPage('/attendance/sync-conflicts', (j) => j, page: page, query: {'status': status, 'program_id': programId, 'batch_id': batchId});
+  Future<Paged<Json>> attendanceConflictBatches({String? status, int? programId, int page = 1}) =>
+      _api.getPage('/attendance/sync-conflicts/batches', (j) => j, page: page, query: {'status': status, 'program_id': programId});
   Future<Json> resolveAttendanceConflict(int id, {required String decision, required String note}) =>
       _api.post('/attendance/sync-conflicts/$id/resolve', body: {'decision': decision, 'note': note}, parse: asJson);
+  Future<Json> bulkResolveAttendanceConflicts({String? batchId, List<int>? conflictIds, required String decision, required String note}) =>
+      _api.post('/attendance/sync-conflicts/bulk-resolve', body: {'batch_id': ?batchId, 'conflict_ids': ?conflictIds, 'decision': decision, 'note': note}, parse: asJson);
   Future<List<int>> attendanceConflictSignature(int id) => _api.bytes('/attendance/sync-conflicts/$id/signature');
   Future<List<int>> attendanceSignature(int attendanceId) => _api.bytes('/programs/attendance/signatures/$attendanceId');
 

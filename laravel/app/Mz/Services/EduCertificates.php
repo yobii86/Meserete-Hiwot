@@ -69,9 +69,12 @@ final class EduCertificates
         foreach ($outcomes as $o) {
             $uid = (int) $o->user_id;
             $hasCert = isset($existing[$uid]);
-            $completion = $isOnlineOrHybrid ? EduLearning::courseCompletion($uid, $courseId) : ['percent' => 100.0];
+            $completion = $isOnlineOrHybrid ? EduLearning::courseCompletion($uid, $courseId) : ['percent' => 100.0, 'total' => 1];
             $completionPct = (float) ($completion['percent'] ?? 100.0);
-            $eligible = (! $isOnlineOrHybrid || $completionPct >= 100.0) && ! $hasCert;
+            $totalLessons = (int) ($completion['total'] ?? ($isOnlineOrHybrid ? 0 : 1));
+            // A course with 0 published lessons cannot grant completion certificates in online/hybrid mode
+            $hasRequiredLessons = ! $isOnlineOrHybrid || $totalLessons > 0;
+            $eligible = $hasRequiredLessons && (! $isOnlineOrHybrid || $completionPct >= 100.0) && ! $hasCert;
 
             $list[] = [
                 'user_id' => $uid,
@@ -81,6 +84,7 @@ final class EduCertificates
                 'score_percent' => Num::n($o->score_percent),
                 'pass_mark' => Num::n($o->pass_mark),
                 'completion_percent' => Num::n($completionPct),
+                'total_lessons' => $totalLessons,
                 'has_certificate' => $hasCert,
                 'eligible' => $eligible,
             ];

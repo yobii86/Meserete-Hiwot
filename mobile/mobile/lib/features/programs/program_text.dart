@@ -19,6 +19,7 @@ String recurrenceSummary(BuildContext context, String recurrence, String? monthl
   final weekday = f.weekday(local);
   return switch (recurrence) {
     'weekly' => l.everyWeekday(weekday),
+    'biweekly' || 'every_two_weeks' => Localizations.localeOf(context).languageCode == 'en' ? 'Every 2 weeks on $weekday' : 'በየሁለት ሳምንቱ $weekday',
     // Twice a month: the same two days each month (the day and the day 14 days apart), or the
     // 1st & 3rd / 2nd & 4th weekday — as the server schedules them.
     'twice_monthly' when monthlyRule == 'nth_weekday' => ((local.day - 1) ~/ 7).isEven ? l.twiceMonthlyNth13(weekday) : l.twiceMonthlyNth24(weekday),

@@ -145,11 +145,26 @@ final class EduScores
 
             $submittedAssignments = 0;
             if ($totalAssignmentsDue > 0) {
-                $submittedAssignments = DB::table('edu_submissions as s')
-                    ->join('edu_assignments as a', 'a.id', '=', 's.assignment_id')
-                    ->where('s.user_id', $uid)
-                    ->whereIn('a.course_id', $userCourses)
-                    ->count();
+                $legacySubmittedIds = Schema::hasTable('edu_submissions')
+                    ? DB::table('edu_submissions as s')
+                        ->join('edu_assignments as a', 'a.id', '=', 's.assignment_id')
+                        ->where('s.user_id', $uid)
+                        ->whereIn('a.course_id', $userCourses)
+                        ->pluck('s.assignment_id')
+                        ->all()
+                    : [];
+
+                $modernSubmittedIds = Schema::hasTable('edu_assignment_submissions')
+                    ? DB::table('edu_assignment_submissions as eas')
+                        ->join('edu_assignments as a', 'a.id', '=', 'eas.assignment_id')
+                        ->where('eas.user_id', $uid)
+                        ->whereIn('a.course_id', $userCourses)
+                        ->pluck('eas.assignment_id')
+                        ->all()
+                    : [];
+
+                $allSubmittedIds = array_unique(array_merge($legacySubmittedIds, $modernSubmittedIds));
+                $submittedAssignments = count($allSubmittedIds);
             }
             $assignmentRatio = $totalAssignmentsDue > 0 ? min(1.0, $submittedAssignments / $totalAssignmentsDue) : 1.0;
 
@@ -343,10 +358,27 @@ final class EduScores
             $enrolledClasses = DB::table('edu_enrollments')->where('user_id', $studentId)->pluck('class_id')->all();
             $teachesStudent = false;
             if ($enrolledClasses) {
-                $teachesStudent = DB::table('edu_courses')
-                    ->whereIn('class_id', $enrolledClasses)
-                    ->where('teacher_user_id', $auth->id)
-                    ->exists();
+                $hasTeacherCol = Schema::hasColumn('edu_courses', 'teacher_user_id');
+                if (Schema::hasTable('edu_course_teachers')) {
+                    $teachesStudent = DB::table('edu_courses as c')
+                        ->leftJoin('edu_course_teachers as ct', 'ct.course_id', '=', 'c.id')
+                        ->whereIn('c.class_id', $enrolledClasses)
+                        ->where(fn ($q) => ($hasTeacherCol ? $q->where('c.teacher_user_id', $auth->id) : $q)
+                            ->orWhere(fn ($q2) => $q2->where('ct.user_id', $auth->id)->where('ct.status', 'active')))
+                        ->exists();
+                } elseif ($hasTeacherCol) {
+                    $teachesStudent = DB::table('edu_courses as c')
+                        ->whereIn('c.class_id', $enrolledClasses)
+                        ->where('c.teacher_user_id', $auth->id)
+                        ->exists();
+                }
+
+                if (! $teachesStudent && Schema::hasTable('edu_class_staff')) {
+                    $teachesStudent = DB::table('edu_class_staff')
+                        ->whereIn('class_id', $enrolledClasses)
+                        ->where('user_id', $auth->id)
+                        ->exists();
+                }
             }
             if (! $teachesStudent) {
                 throw ApiError::forbidden('FORBIDDEN', 'You cannot view this student\'s scores');
@@ -390,6 +422,7 @@ final class EduScores
                 'a.auto_score',
                 'a.manual_score',
                 'a.max_score as attempt_max_score',
+                'a.question_ids',
                 'a.needs_grading',
                 'a.started_at',
                 'a.submitted_at',
@@ -411,9 +444,19 @@ final class EduScores
 
             $shouldWithhold = $isPendingGrading || ! $isResultsReleased;
 
-            $maxScore = (float) ($att->quiz_max_score ?: ($att->attempt_max_score ?: 100));
+            $qids = ! empty($att->question_ids) ? (is_array($att->question_ids) ? $att->question_ids : json_decode($att->question_ids, true)) : [];
+            $totalQuestions = is_array($qids) && ! empty($qids) ? count($qids) : (int) DB::table('edu_quiz_questions')->where('quiz_id', $att->quiz_id)->count();
+
+            // Maximum score: if attempt or quiz specifies a max_score, use it; otherwise use the total questions count
+            $maxScore = (float) ($att->quiz_max_score ?: ($att->attempt_max_score ?: ($totalQuestions > 0 ? $totalQuestions : 100)));
             $rawTotal = (float) ($att->auto_score ?? 0) + (float) ($att->manual_score ?? 0);
             $calculatedPercent = $maxScore > 0 ? round(($rawTotal / $maxScore) * 100, 2) : 0.0;
+
+            // Correct answers count from edu_quiz_answers
+            $correctCount = (int) DB::table('edu_quiz_answers')
+                ->where('attempt_id', $att->attempt_id)
+                ->where('is_correct', 1)
+                ->count();
 
             $scoreDisplay = null;
             $percentDisplay = null;
@@ -444,7 +487,9 @@ final class EduScores
                 'results_release_at' => $att->results_release_at,
                 'score' => $scoreDisplay,
                 'score_percent' => $percentDisplay,
-                'max_score' => Num::n($att->quiz_max_score ?: 100),
+                'max_score' => Num::n($maxScore),
+                'correct_answers' => $correctCount,
+                'total_questions' => $totalQuestions,
                 'notice' => $isPendingGrading
                     ? 'Short-answer questions awaiting grading by teacher'
                     : (! $isResultsReleased ? 'Results will be released at ' . $att->results_release_at : null),

@@ -46,6 +46,7 @@ Route::prefix('me')->middleware('mz')->group(function () {
         return Http::ok(Account::profile(Ctx::auth()));
     });
 
+    Route::get('telegram/status', fn () => Http::ok(Telegram::userStatus(Ctx::auth()->id)));
     Route::post('telegram/link', fn () => Http::ok(Telegram::createLinkToken(Ctx::auth()->id)));
     Route::delete('telegram', function () {
         Telegram::unlink(Ctx::auth()->id);
